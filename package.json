@@ -7,7 +7,8 @@
     "index": "node indexer/index.mjs",
     "start": "node server.mjs",
     "build": "node scripts/build-pages.mjs",
-    "check-stuck": "node indexer/check-stuck.mjs"
+    "check-stuck": "node indexer/check-stuck.mjs",
+    "rewards": "node indexer/rewards.mjs"
   },
   "dependencies": {
     "viem": "^2.21.0"

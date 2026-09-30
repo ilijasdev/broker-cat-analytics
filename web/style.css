@@ -65,7 +65,7 @@ h3 { font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spac
 .grid { display: grid; gap: 18px; }
 .kpis { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin-bottom: 18px; }
 .one { grid-template-columns: 1fr; }
-.two { grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); }
 @media (max-width: 480px) { .two { grid-template-columns: 1fr; } .brand h1 { font-size: 20px; } }
 .kpi .body { padding: 12px 14px; }
 .kpi .v { font: 800 24px var(--display); font-variant-numeric: tabular-nums; word-break: break-word; }

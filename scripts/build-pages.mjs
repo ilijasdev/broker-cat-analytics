@@ -13,4 +13,6 @@ fs.cpSync(path.join(ROOT, 'web'), OUT, { recursive: true });
 fs.mkdirSync(path.join(OUT, 'data'), { recursive: true });
 fs.copyFileSync(data, path.join(OUT, 'data', 'analytics.json'));
 fs.writeFileSync(path.join(OUT, '.nojekyll'), '');
+const rw = path.join(ROOT, 'data', 'rewards.json');
+if (fs.existsSync(rw)) fs.copyFileSync(rw, path.join(OUT, 'data', 'rewards.json'));
 console.log(`docs/ ready (${(fs.statSync(path.join(OUT, 'data', 'analytics.json')).size / 1e6).toFixed(1)} MB data)`);

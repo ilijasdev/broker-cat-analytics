@@ -1,6 +1,6 @@
 const $ = (s, r = document) => r.querySelector(s);
 const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
-let D = null, unit = 'edel';
+let D = null, R = null, unit = 'edel';
 const charts = {};
 
 // ---------- formatting ----------
@@ -44,12 +44,13 @@ async function load() {
   const r = await fetch('data/analytics.json', { cache: 'no-store' });
   if (!r.ok) throw new Error('data/analytics.json not found');
   D = await r.json();
+  try { const rr = await fetch('data/rewards.json', { cache: 'no-store' }); if (rr.ok) R = await rr.json(); } catch { /* optional */ }
   $('#loading').hidden = true;
   $('#asof').textContent = `DATA THROUGH BLOCK ${D.lastBlock} · GENERATED ${dt(D.generatedAt)} UTC · ${D.trades.length} TRADES · ${D.wallets.length} WALLETS`;
   if (!D.edelUsd) document.querySelector('input[value=usd]').closest('label').hidden = true;
   renderAll();
 }
-const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderLp(); renderRisk(); };
+const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderRewards(); renderLp(); renderRisk(); };
 
 // ---------- overview ----------
 function renderOverview() {
@@ -72,9 +73,11 @@ function renderOverview() {
     </div>
     <div class="grid one">
       ${win('PRICE_PER_TRADE.CHART', '<div class="chartbox tall"><canvas id="c-price"></canvas></div>')}
-      ${win('DAILY_VOLUME.CHART', '<div class="chartbox tall"><canvas id="c-vol"></canvas></div>')}
-      ${win('NET_FLOW.CHART <span class="muted">(buys − sells)</span>', '<div class="chartbox tall"><canvas id="c-net"></canvas></div>')}
-      ${win('WALLET_PNL_DISTRIBUTION.CHART', '<div class="chartbox tall"><canvas id="c-dist"></canvas></div>')}
+    </div>
+    <div class="grid two" style="margin-top:18px">
+      ${win('DAILY_VOLUME.CHART', '<div class="chartbox"><canvas id="c-vol"></canvas></div>')}
+      ${win('NET_FLOW.CHART <span class="muted">(buys − sells)</span>', '<div class="chartbox"><canvas id="c-net"></canvas></div>')}
+      ${win('WALLET_PNL_DISTRIBUTION.CHART', '<div class="chartbox"><canvas id="c-dist"></canvas></div>')}
     </div>
     ${note('PnL uses only trades through this pool (average-cost method, in EDEL). Tokens acquired any other way carry zero cost basis and are flagged as “untracked”. USD uses today’s EDEL/USD rate, not the historical one.')}`;
 
@@ -180,6 +183,7 @@ function openWallet(a) {
       </div>
       ${w.untrackedSold > 1e-6 ? note(`Sold ${compact(w.untrackedSold)} BROKER with no tracked purchase through this pool (booked at zero cost) — realized PnL is probably overstated.`) : ''}
       ${w.viaRouter ? note(`${w.viaRouter} trades were resolved through a router address (final recipient/sender is followed); attribution may be off for complex aggregators.`) : ''}`)}
+    ${(() => { const rw = R?.holders.find((h) => h.address === a); return rw ? note(`Holder rewards claimed from the tracker: <b>${compact(rw.edel)} EDEL</b> + <b>${compact(rw.broker)} BROKER</b> (not included in the PnL above).`) : ''; })()}
     ${win('CUMULATIVE_PNL.CHART', '<div class="chartbox" style="height:220px"><canvas id="c-wallet"></canvas></div>')}
     ${win('TRADES.LOG', `<div class="tablewrap" style="max-height:40vh"><table><thead><tr><th class="l">Time (UTC)</th><th>Side</th><th>BROKER</th><th>EDEL</th><th>Price</th><th></th></tr></thead><tbody>
     ${mine.slice().reverse().map((t) => `<tr><td class="l">${dt(t.ts)}</td><td><span class="tag ${t.side}">${t.side}</span></td><td>${compact(t.broker)}</td><td>${compact(t.edel)}</td><td>${price(t.price)}</td><td>${txl(t.tx)}</td></tr>`).join('')}
@@ -255,6 +259,58 @@ function renderHook() {
     options: { scales: { x: { stacked: true, ticks: { maxTicksLimit: 8 } }, y: { stacked: true } } } });
 }
 
+// ---------- holder rewards ----------
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : 0; };
+
+function renderRewards() {
+  if (!R) { $('#rewards').innerHTML = note('No <code>data/rewards.json</code> yet — run <code>npm run rewards</code>.'); return; }
+  const mark = D.markPrice;
+  const val = (h) => h.edel + h.broker * mark; // value in EDEL, BROKER at the last price
+  const ratio = (o, i) => (i > 0 ? o / i : null);
+  const pnl = new Map(D.wallets.map((w) => [w.address, w]));
+  const totalVal = R.holders.reduce((a, h) => a + val(h), 0);
+  $('#rewards').innerHTML = `
+    <div class="grid kpis">
+      ${kpi('EDEL paid to holders', money(R.EDEL.out))}
+      ${kpi('BROKER paid to holders', compact(R.BROKER.out) + ' BROKER')}
+      ${kpi('Addresses that received rewards', nf(R.uniqueRecipients, 0) + (R.contractRecipients ? ` <span class="muted small">(${R.contractRecipients} are contracts, mostly smart wallets/bots)</span>` : ''))}
+      ${kpi('Payout transfers', nf(R.EDEL.claims + R.BROKER.claims, 0))}
+      ${kpi('Received by tracker (EDEL)', `${money(R.EDEL.in)} <span class="muted small">${pct(ratio(R.EDEL.out, R.EDEL.in))} paid out</span>`)}
+      ${kpi('Received by tracker (BROKER)', `${compact(R.BROKER.in)} <span class="muted small">${pct(ratio(R.BROKER.out, R.BROKER.in))} paid out</span>`)}
+      ${kpi('Still in tracker (unclaimed)', `${money(R.EDEL.balance)} + ${compact(R.BROKER.balance)} BROKER`)}
+      ${kpi('First deposit → last claim', `${dt(R.firstInTs).slice(5, 10)} → ${dt(R.lastClaimTs).slice(5, 10)}`)}
+    </div>
+    ${note(`<b>Mechanism.</b> The hook’s <code>afterSwap</code> only sends 85% of the creator share of every tax to the payee <code>${short(R.tracker)}</code> (the token’s <code>rewardTracker</code>) — a plain transfer. The <i>payout to holders</i> is triggered by the BROKER token itself: its <code>_update</code> calls <code>tracker.ping(from, to, value)</code> (up to 5M gas, failures ignored) after <b>every</b> BROKER transfer, so each trade advances a queue of holders and pays them automatically; <code>claim()</code> is optional. Figures are rebuilt from BROKER/EDEL <code>Transfer</code> logs to/from the tracker (its source is unverified). BROKER is valued at the last price (${price(mark)}${usdOK() ? '' : ' EDEL'}).${R.api ? ` Cross-check with the launchpad API: rewardsToken ${compact(R.api.rewardsToken)} BROKER, rewardsPair ${compact(R.api.rewardsPair)} EDEL, ${nf(R.api.holders, 0)} holders.` : ''}`)}
+    <div class="grid two">
+      ${win(`TOP_RECIPIENTS.CHART <span class="muted">(value in ${usdOK() ? 'USD' : 'EDEL'})</span>`, '<div class="chartbox"><canvas id="c-rw"></canvas></div>')}
+      ${win('DISTRIBUTION_STATS.TXT', `<table><tbody>
+        <tr><td class="l">Median reward per address</td><td>${money(median(R.holders.map(val)))}</td></tr>
+        <tr><td class="l">Average reward per address</td><td>${money(totalVal / (R.holders.length || 1))}</td></tr>
+        <tr><td class="l">Top 10 share of all rewards</td><td>${pct(R.holders.slice(0, 10).reduce((a, h) => a + val(h), 0) / (totalVal || 1))}</td></tr>
+        <tr><td class="l">EDEL deposited by hook / PoolManager</td><td>${money(R.EDEL.inFromHook)}</td></tr>
+        <tr><td class="l">EDEL deposited from elsewhere</td><td>${money(R.EDEL.inOther)}</td></tr>
+        <tr><td class="l">BROKER deposited by hook / PoolManager</td><td>${compact(R.BROKER.inFromHook)}</td></tr>
+        <tr><td class="l">BROKER deposited from elsewhere</td><td>${compact(R.BROKER.inOther)}</td></tr>
+      </tbody></table>`)}
+    </div>
+    <div style="height:18px"></div>
+    ${win('REWARD_RECIPIENTS.LOG', `<div class="toolbar"><input type="search" id="rq" placeholder="Search address…"><select id="rk"><option value="all">All recipients</option><option value="wallet">EOAs only</option><option value="contract">Contracts / smart wallets only</option></select><span class="muted small" id="rcount"></span></div>
+      <div class="tablewrap"><table><thead><tr><th class="l">Address</th><th>Type</th><th>BROKER received</th><th>EDEL received</th><th>Total value</th><th>Claims</th><th>Last claim block</th><th>Trading PnL</th></tr></thead><tbody></tbody></table></div>`)}`;
+  const fill = () => {
+    const q = $('#rq').value.trim().toLowerCase(), k = $('#rk').value;
+    const rows = R.holders.filter((h) => (!q || h.address.includes(q)) && (k === 'all' || (k === 'contract') === h.isContract));
+    $('#rcount').textContent = `${rows.length} addresses${rows.length > 500 ? ' (showing top 500)' : ''}`;
+    $('#rewards tbody').innerHTML = rows.slice(0, 500).map((h) => {
+      const w = pnl.get(h.address);
+      return `<tr><td class="l">${addr(h.address)}</td><td>${h.isContract ? '<span class="tag">contract</span>' : 'EOA'}</td><td>${compact(h.broker)}</td><td>${compact(h.edel)}</td><td>${money(val(h))}</td><td>${h.claims}</td><td>${h.lastBlock}</td><td>${w ? sgn(w.total) : '<span class="muted">–</span>'}</td></tr>`;
+    }).join('');
+  };
+  $('#rq').oninput = fill; $('#rk').onchange = fill; fill();
+  const top = R.holders.slice(0, 15);
+  draw('c-rw', { type: 'bar', data: { labels: top.map((h) => short(h.address)), datasets: [{ data: top.map((h) => moneyPlain(val(h))), ...bar(top.map((h) => (h.isContract ? css('cyan') : css('acid')))) }] },
+    options: { indexAxis: 'y', plugins: { legend: { display: false } } } });
+}
+
 // ---------- LP ----------
 function renderLp() {
   const L = D.liq;
@@ -298,6 +354,7 @@ function renderRisk() {
     ['med', 'Flash loans and the reward tracker', 'If the tracker distributes by balance at transfer time, a borrowed balance could claim rewards. The 2.5% max wallet limits this, but the tracker source needs to be reviewed.'],
     ['med', 'Tax avoidance via other venues', 'Tax applies only to swaps in this pool. Empty V2 pairs and other pools (e.g. BROKER/USDC with a different hook) do not apply it, so routing through them avoids tax. The launcher is also fully exempt and sniperExempt addresses skip the sniper decay.'],
     ['med', 'Burns could silently fail', '`_payOut(BURN)` uses take with try/catch. If a BROKER transfer to dEaD reverts (e.g. max wallet), the amount becomes an ERC-6909 claim instead of being burned. dEaD is currently exempt and holds well under 2.5%, but this must be watched as it grows.'],
+    ['med', 'Reward payouts run inside every BROKER transfer', 'BROKER’s `_update` calls `tracker.ping` with up to 5M gas after each transfer and ignores failure. Swaps therefore carry the payout gas (sampled swaps averaged ~1.6M gas), and if `ping` reverts or runs out of gas the transfer still succeeds while the tracker silently misses that update. The tracker is unverified, so its accounting cannot be reviewed. Payouts to a holder near the 2.5% max wallet would also revert on the token side.'],
     ['low', 'JIT liquidity', 'Standard v4 vector: add LP before a swap, remove after. Profit is limited to the LP fee because tax does not go to LPs.'],
     ['low', 'Spot-price manipulation with flash loans', 'The PoolManager’s flash accounting allows moving the price inside one transaction. It only matters if another contract (lending, oracle, tracker) reads the pool’s spot price or slot0. The hook itself reads slot0 only to place its own ranges.'],
     ['low', 'Centralization', 'platformAdmin can change payees and sniperExempt; the launcher finalizes the launch. Nobody can raise the tax or pull other LPs’ liquidity via this hook (no liquidity hooks, donate disabled).'],
