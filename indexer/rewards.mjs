@@ -75,6 +75,10 @@ const num = (v) => Number(formatUnits(BigInt(v), dec));
 const tokens = { BROKER: { in: 0, out: 0, inFromHook: 0, inOther: 0, claims: 0, holders: new Map() }, EDEL: { in: 0, out: 0, inFromHook: 0, inOther: 0, claims: 0, holders: new Map() } };
 const PM = lc(C.POOL_MANAGER), HOOK = lc(C.HOOK);
 let firstIn = null, lastOut = null;
+// Historical valuation: each payout is valued at the price of the nearest trade, timestamp interpolated (Base blocks are 2s).
+const TR = analytics.trades;
+const nearest = (block) => { let lo = 0, hi = TR.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (TR[m].block < block) lo = m + 1; else hi = m; } return TR[lo]; };
+const perAddr = new Map();
 for (const t of cache.transfers) {
   const k = tokens[t.token], v = num(t.value);
   if (t.dir === 'in') {
@@ -88,6 +92,12 @@ for (const t of cache.transfers) {
     h.amount += v; h.n++; h.last = Math.max(h.last, t.block);
     k.holders.set(t.to, h);
     lastOut = Math.max(lastOut ?? 0, t.block);
+    const nt = nearest(t.block), ts = nt.ts + (t.block - nt.block) * 2;
+    const pa = perAddr.get(t.to) ?? { value: 0, first: Infinity, last: 0, ev: [] };
+    pa.value += t.token === 'EDEL' ? v : v * nt.price;
+    pa.first = Math.min(pa.first, ts); pa.last = Math.max(pa.last, ts);
+    pa.ev.push([ts, t.token === 'EDEL' ? 1 : 0, t.token === 'EDEL' ? +v.toFixed(6) : +v.toFixed(2)]);
+    perAddr.set(t.to, pa);
   }
 }
 
@@ -101,13 +111,17 @@ const [balB, balE] = await Promise.all([bal(C.BROKER), bal(C.EDEL)]);
 const addrs = new Set([...tokens.BROKER.holders.keys(), ...tokens.EDEL.holders.keys()]);
 const holders = [...addrs].map((a) => {
   const b = tokens.BROKER.holders.get(a), e = tokens.EDEL.holders.get(a);
-  return { address: a, broker: b?.amount ?? 0, edel: e?.amount ?? 0, claims: (b?.n ?? 0) + (e?.n ?? 0), lastBlock: Math.max(b?.last ?? 0, e?.last ?? 0) };
+  const pa = perAddr.get(a);
+  return { address: a, broker: b?.amount ?? 0, edel: e?.amount ?? 0, claims: (b?.n ?? 0) + (e?.n ?? 0), lastBlock: Math.max(b?.last ?? 0, e?.last ?? 0),
+    valueEdel: pa?.value ?? 0, firstTs: pa?.first ?? null, lastTs: pa?.last ?? null, ev: pa ? pa.ev.sort((x, y) => x[0] - y[0]) : [] };
 });
 
 // which recipients are contracts (routers, pools) rather than holder wallets?
 const codeFlags = new Map();
-for (let i = 0; i < holders.length; i += 25) {
-  await Promise.all(holders.slice(i, i + 25).map(async (h) => {
+if (fs.existsSync(OUT)) { try { for (const h of JSON.parse(fs.readFileSync(OUT, 'utf8')).holders) codeFlags.set(h.address, h.isContract); } catch { /* first run */ } }
+const unknown = holders.filter((h) => !codeFlags.has(h.address));
+for (let i = 0; i < unknown.length; i += 25) {
+  await Promise.all(unknown.slice(i, i + 25).map(async (h) => {
     const code = await client.getCode({ address: h.address }).catch(() => null);
     codeFlags.set(h.address, !!code && code !== '0x');
   }));

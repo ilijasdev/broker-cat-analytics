@@ -313,106 +313,194 @@ function renderRewards() {
 
 // ---------- reward calculator ----------
 // Expected holder reward = daily volume x holder reward rate x (your BROKER / eligible supply).
-// Inputs are editable; defaults come from the indexed data. All numbers are estimates.
-const calcState = {};
+// Part 1 looks up an address (rewards received so far, live balance, yield). Part 2 is a what-if with
+// market-cap and volume multipliers. Everything is an estimate.
+const RPCS = ['https://mainnet.base.org', 'https://base-rpc.publicnode.com'];
+const calcState = { addr: '', balance: null, mcapMult: 1, volMult: 1, volBase: '24h', rate: 1.8, touched: false };
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+try { calcState.addr = localStorage.getItem('bca-addr') || ''; } catch { /* storage may be unavailable */ }
+
+async function rpcBalance(a) {
+  const data = '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0');
+  for (const url of RPCS) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: D.token.address, data }, 'latest'] }) });
+      const j = await r.json();
+      if (j.result && j.result !== '0x') return Number(BigInt(j.result)) / 1e18;
+    } catch { /* try next RPC */ }
+  }
+  return null;
+}
+
+function priceAtTs(ts) { // EDEL per BROKER at the nearest trade
+  const T = D.trades; let lo = 0, hi = T.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (T[m].ts < ts) lo = m + 1; else hi = m; }
+  return T[lo].price;
+}
+
 function renderCalc() {
   if (!D.edelUsd) { $('#calc').innerHTML = note('EDEL/USD rate unavailable, so the calculator (which works in USD) cannot run. Re-run the indexer.'); return; }
-  const supply = D.token.totalSupply || 1e9;
-  const priceUsdNow = D.markPrice * D.edelUsd;
-  const mcapNow = priceUsdNow * supply;
-  const T = D.trades, tEnd = T[T.length - 1].ts;
-  const dayVol = (from, to) => T.filter((t) => t.ts > from && t.ts <= to).reduce((a, t) => a + t.edel, 0) * D.edelUsd;
-  const vol24 = dayVol(tEnd - 86400, tEnd), volAvg = T.reduce((a, t) => a + t.edel, 0) * D.edelUsd / Math.max(1, (tEnd - T[0].ts) / 86400);
-  const buyShareNow = T.filter((t) => t.side === 'buy').reduce((a, t) => a + t.edel, 0) / (T.reduce((a, t) => a + t.edel, 0) || 1);
-  const ex = R?.excluded;
-  const excludedNow = ex ? ex.poolManager + ex.dead + ex.tracker : (D.token.poolManagerBalance || 0);
-  // observed: value deposited into the tracker / traded volume (see README); theory is 1.70%
-  const defaults = { mode: 'tokens', amount: 10_000_000, mcap: Math.round(mcapNow), vol: Math.round(vol24), rate: 1.8, buyShare: Math.round(buyShareNow * 100), excluded: Math.round(excludedNow) };
-  const kept = calcState.touched ? { ...calcState } : {}; // keep the user's edits across tab re-renders (e.g. EDEL/USD toggle)
-  Object.assign(calcState, defaults, kept);
   const s = calcState;
+  const supply = D.token.totalSupply || 1e9;
+  const T = D.trades, tEnd = T[T.length - 1].ts, tStart = T[0].ts;
+  const priceNow = D.markPrice * D.edelUsd, mcapNow = priceNow * supply;
+  const totalVolUsd = T.reduce((a, t) => a + t.edel, 0) * D.edelUsd;
+  const vol24 = T.filter((t) => t.ts > tEnd - 86400).reduce((a, t) => a + t.edel, 0) * D.edelUsd;
+  const volAvg = totalVolUsd / Math.max(1, (tEnd - tStart) / 86400);
+  const buyShare = T.filter((t) => t.side === 'buy').reduce((a, t) => a + t.edel, 0) / (T.reduce((a, t) => a + t.edel, 0) || 1);
+  const ex = R?.excluded;
+  const excluded = ex ? ex.poolManager + ex.dead + ex.tracker : (D.token.poolManagerBalance || 0);
+  const eligible = Math.max(1, supply - excluded);
+  const usd = (v) => '$' + (Math.abs(v) >= 100 ? nf(v, 0) : Math.abs(v) >= 1 ? nf(v, 2) : nf(v, 4));
+  const apy = (apr) => (Math.pow(1 + apr / 365, 365) - 1);
 
   $('#calc').innerHTML = `
-    <div class="grid two">
-      ${win('YOUR_POSITION.EXE', `
-        <div class="grid" style="gap:12px">
-          <label>I enter my holding as
-            <select id="k-mode"><option value="tokens">BROKER tokens</option><option value="usd">USD value</option></select></label>
-          <label><span id="k-amount-l">BROKER held</span><br><input type="number" id="k-amount" min="0" step="any" value="${s.amount}" style="width:100%"></label>
-          <label>Market cap (USD, FDV of ${compact(supply)} BROKER) — now ${'$' + compact(mcapNow)}<br>
-            <input type="range" id="k-mcap-r" min="4" max="9" step="0.01" style="width:100%"><input type="number" id="k-mcap" min="1" step="any" value="${s.mcap}" style="width:100%"></label>
-          <label>Daily trading volume (USD) — last 24h ${'$' + compact(vol24)}, period average ${'$' + compact(volAvg)}<br>
-            <input type="range" id="k-vol-r" min="3" max="8" step="0.01" style="width:100%"><input type="number" id="k-vol" min="0" step="any" value="${s.vol}" style="width:100%"></label>
-        </div>`)}
-      ${win('ASSUMPTIONS.SYS', `
-        <div class="grid" style="gap:12px">
-          <label>Holder reward rate (% of volume) — observed ~1.8%, theory 1.70%<br><input type="number" id="k-rate" min="0" step="0.01" value="${s.rate}" style="width:100%"></label>
-          <label>Share of volume that is buys (%) — buys pay the reward in BROKER, sells in EDEL<br><input type="number" id="k-buy" min="0" max="100" step="1" value="${s.buyShare}" style="width:100%"></label>
-          <label>Supply that earns nothing (BROKER) — PoolManager + dead + tracker now<br><input type="number" id="k-excl" min="0" step="any" value="${s.excluded}" style="width:100%"></label>
-          <button class="pill" id="k-reset" type="button">reset to live values</button>
-        </div>
-        ${note('Model: your expected reward = volume × rate × your share of the <i>eligible</i> supply. Real payouts are queue-based and lumpy, depend on <i>when</i> you held, and change with volume, price and who else holds. Not financial advice.')}`)}
-    </div>
+    ${win('MY_WALLET.EXE <span class="muted">— rewards received so far</span>', `
+      <div class="toolbar">
+        <input type="search" id="k-addr" placeholder="Paste your wallet address (0x…)" value="${s.addr}" style="flex:1;min-width:280px">
+        <button class="pill" id="k-look" type="button">Look up</button>
+        <span class="muted small" id="k-status"></span>
+      </div>
+      <div id="k-wallet"></div>
+      ${note('Runs entirely in your browser. The address is only used to read your public BROKER balance from a public Base RPC and to look it up in the indexed data; it is not sent to any server of ours. It is remembered in this browser only.')}`)}
     <div style="height:18px"></div>
-    <div id="k-out"></div>`;
+    ${win('WHAT_IF.EXE <span class="muted">— scale market cap and volume</span>', `
+      <div class="grid two" style="margin-bottom:12px">
+        <div class="grid" style="gap:12px">
+          <label>BROKER held<br><input type="number" id="k-amount" min="0" step="any" style="width:100%"></label>
+          <label>Market cap multiplier: <b id="k-mm-v"></b> <span class="muted small">(price × same; now ${'$' + compact(mcapNow)}, ${'$' + priceNow.toPrecision(3)} per BROKER)</span><br>
+            <input type="range" id="k-mm-r" min="-1" max="2" step="0.01" style="width:100%">
+            <span class="chips" data-for="mcapMult">${[0.5, 1, 2, 5, 10, 25].map((m) => `<button class="pill chip" type="button" data-v="${m}">${m}×</button>`).join(' ')}</span></label>
+          <label>Volume multiplier: <b id="k-vm-v"></b> <span class="muted small">(base ${'$' + compact(s.volBase === 'avg' ? volAvg : vol24)} / day)</span><br>
+            <input type="range" id="k-vm-r" min="-1" max="2" step="0.01" style="width:100%">
+            <span class="chips" data-for="volMult">${[0.25, 0.5, 1, 2, 5, 10].map((m) => `<button class="pill chip" type="button" data-v="${m}">${m}×</button>`).join(' ')}</span></label>
+        </div>
+        <div class="grid" style="gap:12px">
+          <label>Base daily volume<br><select id="k-vbase"><option value="24h">Last 24h of data (${'$' + compact(vol24)})</option><option value="avg">Period average (${'$' + compact(volAvg)})</option></select></label>
+          <label>Holder reward rate (% of volume) — observed ~1.8%, theory 1.70%<br><input type="number" id="k-rate" min="0" step="0.01" style="width:100%"></label>
+          <div class="small muted">Buys are ${(buyShare * 100).toFixed(0)}% of volume (they pay the reward in BROKER, sells in EDEL). Supply that earns nothing: ${compact(excluded)} BROKER (PoolManager + dead + tracker), so ${compact(eligible)} BROKER share the pool.</div>
+        </div>
+      </div>
+      <div id="k-out"></div>`)}`;
 
   const $k = (id) => document.getElementById(id);
-  $k('k-mode').value = s.mode;
-  const logToVal = (x) => 10 ** x, valToLog = (v) => Math.log10(Math.max(1, v));
-  $k('k-mcap-r').value = valToLog(s.mcap); $k('k-vol-r').value = valToLog(s.vol);
+  const toLog = (m) => Math.log10(m), fromLog = (x) => +(10 ** x).toPrecision(3);
+  $k('k-amount').value = s.balance ?? 10_000_000;
+  $k('k-rate').value = s.rate; $k('k-vbase').value = s.volBase;
 
-  const calc = () => {
-    const price = s.mcap / supply;
-    const tokens = s.mode === 'tokens' ? s.amount : s.amount / price;
-    const holdUsd = tokens * price;
-    const eligible = Math.max(1, supply - s.excluded);
-    const share = tokens / eligible;
-    const pool = s.vol * (s.rate / 100);
-    const daily = pool * share;
-    const apr = holdUsd > 0 ? (daily * 365) / holdUsd : 0;
-    const brokerDaily = (daily * (s.buyShare / 100)) / price;
-    const edelDaily = (daily * (1 - s.buyShare / 100)) / D.edelUsd;
-    const usd = (v) => '$' + (Math.abs(v) >= 100 ? nf(v, 0) : nf(v, 2));
-    const cell = (v, daysN) => `<td>${usd(v * daysN)}</td>`;
-    const volMult = [0.25, 0.5, 1, 2, 5], capMult = [0.5, 1, 2, 5, 10];
-    const gridDaily = volMult.map((vm) => `<tr><td class="l">${'$' + compact(s.vol * vm)} / day</td>${capMult.map((cm) => {
-      const p = (s.mcap * cm) / supply, tk = s.mode === 'tokens' ? s.amount : s.amount / (s.mcap / supply); // USD mode: same token count, price moves
-      return `<td>${usd(s.vol * vm * (s.rate / 100) * (tk / eligible))}</td>`;
-    }).join('')}</tr>`).join('');
-    const gridApr = volMult.map((vm) => `<tr><td class="l">${'$' + compact(s.vol * vm)} / day</td>${capMult.map((cm) =>
-      `<td>${nf((s.vol * vm * (s.rate / 100) * 365) / ((s.mcap * cm / supply) * eligible) * 100, 1)}%</td>`).join('')}</tr>`).join('');
+  const scenario = () => {
+    const tokens = +$k('k-amount').value || 0;
+    const volBase = s.volBase === 'avg' ? volAvg : vol24;
+    const cases = [
+      { name: 'Now', mm: 1, vm: 1 },
+      { name: 'Scenario', mm: s.mcapMult, vm: s.volMult },
+    ].map((c) => {
+      const mcap = mcapNow * c.mm, price = mcap / supply, vol = volBase * c.vm;
+      const share = tokens / eligible, pool = vol * (s.rate / 100), daily = pool * share, pos = tokens * price;
+      const apr = pos > 0 ? (daily * 365) / pos : 0;
+      return { ...c, mcap, price, vol, share, pool, daily, pos, apr,
+        brokerDay: (daily * buyShare) / price, edelDay: (daily * (1 - buyShare)) / D.edelUsd };
+    });
+    const [a, b] = cases;
+    const row = (l, f, cls = '') => `<tr><td class="l">${l}</td><td>${f(a)}</td><td class="${cls}"><b>${f(b)}</b></td></tr>`;
+    $k('k-mm-v').textContent = s.mcapMult + '×'; $k('k-vm-v').textContent = s.volMult + '×';
     $k('k-out').innerHTML = `
+      <div class="grid two">
+        ${win('NOW_vs_SCENARIO.TABLE', `<div class="tablewrap"><table><thead><tr><th class="l"></th><th>Now</th><th>Scenario (${s.mcapMult}× cap, ${s.volMult}× volume)</th></tr></thead><tbody>
+          ${row('Market cap', (c) => usd(c.mcap))}
+          ${row('Price per BROKER', (c) => '$' + c.price.toPrecision(3))}
+          ${row('Your position value', (c) => usd(c.pos))}
+          ${row('Daily volume', (c) => usd(c.vol))}
+          ${row('Holder reward pool / day', (c) => usd(c.pool))}
+          ${row('Your share of eligible supply', (c) => (c.share * 100).toFixed(c.share < 0.01 ? 4 : 2) + '%')}
+          ${row('Your reward / day', (c) => usd(c.daily), 'pos')}
+          ${row('Per week', (c) => usd(c.daily * 7))}
+          ${row('Per month', (c) => usd(c.daily * 30))}
+          ${row('Per year', (c) => usd(c.daily * 365), 'pos')}
+          ${row('APR (reward ÷ position value)', (c) => nf(c.apr * 100, 1) + '%', 'pos')}
+          ${row('APY if rewards were re-invested daily (theoretical)', (c) => c.apr > 20 ? 'not meaningful' : nf(apy(c.apr) * 100, 1) + '%')}
+          ${row('Paid in kind / day', (c) => `${compact(c.brokerDay)} BROKER + ${compact(c.edelDay)} EDEL`)}
+        </tbody></table></div>
+        <div class="small muted" style="margin-top:8px">With a fixed token count, a higher market cap raises your position value but <b>not</b> your reward (reward = volume × rate × your share). So APR scales as <b>volume ÷ market cap</b>: ${s.volMult}× volume with ${s.mcapMult}× cap changes APR by ${(s.volMult / s.mcapMult).toFixed(2)}×.</div>`)}
+        ${win('SENSITIVITY.TABLE <span class="muted">(your reward / day · APR)</span>', (() => {
+          const vms = [0.25, 0.5, 1, 2, 5, 10], mms = [0.5, 1, 2, 5, 10, 25];
+          const cell = (vm, mm) => { const daily = volBase * vm * (s.rate / 100) * (tokens / eligible), pos = tokens * (mcapNow * mm / supply); return `<td>${usd(daily)} · ${nf(pos > 0 ? daily * 365 / pos * 100 : 0, 0)}%</td>`; };
+          return `<div class="tablewrap"><table><thead><tr><th class="l">Volume ↓ / Cap →</th>${mms.map((m) => `<th>${m}×</th>`).join('')}</tr></thead><tbody>
+            ${vms.map((vm) => `<tr><td class="l">${vm}× (${'$' + compact(volBase * vm)})</td>${mms.map((mm) => cell(vm, mm)).join('')}</tr>`).join('')}</tbody></table></div>`;
+        })())}
+      </div>`;
+    $k('k-mm-r').value = toLog(s.mcapMult); $k('k-vm-r').value = toLog(s.volMult);
+  };
+
+  // ----- wallet lookup -----
+  const lookup = async () => {
+    const a = $k('k-addr').value.trim();
+    const out = $k('k-wallet'), st = $k('k-status');
+    if (!ADDR_RE.test(a)) { st.textContent = 'Not a valid 0x address.'; return; }
+    s.addr = a; try { localStorage.setItem('bca-addr', a); } catch { /* ignore */ }
+    st.textContent = 'reading balance…';
+    const al = a.toLowerCase();
+    const rec = R?.holders.find((h) => h.address === al);
+    const w = D.wallets.find((x) => x.address === al);
+    const bal = await rpcBalance(a);
+    st.textContent = bal == null ? 'Could not read the balance from public RPCs — enter it manually below.' : '';
+    s.balance = bal ?? s.balance;
+    if (bal != null) $k('k-amount').value = bal;
+    const pos = (s.balance ?? 0) * priceNow;
+    if (!rec) {
+      out.innerHTML = note(`No holder-reward payouts found for <code>${short(a)}</code> in the indexed data (through block ${R?.lastBlock ?? '–'}). ${bal != null ? `It holds ${compact(bal)} BROKER now. ` : ''}It may have bought after the last index run, hold through a contract, or be excluded.`) +
+        (s.balance ? `<div class="grid kpis">${kpi('BROKER balance now', compact(s.balance) + ` <span class="muted small">${usd(pos)}</span>`)}</div>` : '');
+      scenario(); return;
+    }
+    const earnedUsd = rec.valueEdel * D.edelUsd;
+    const startTs = rec.firstTs, days = Math.max(1, (tEnd - startTs) / 86400);
+    const realizedApr = pos > 0 ? (earnedUsd / pos) * (365 / days) : null;
+    const share = (s.balance ?? 0) / eligible;
+    const fwd = (v) => v * (s.rate / 100) * share;
+    const fwd24 = fwd(vol24), fwdAvg = fwd(volAvg);
+    out.innerHTML = `
       <div class="grid kpis">
-        ${kpi('Position value', usd(holdUsd) + ` <span class="muted small">${compact(tokens)} BROKER @ $${(price).toPrecision(3)}</span>`)}
-        ${kpi('Your share of eligible supply', (share * 100).toFixed(share < 0.01 ? 4 : 2) + '%')}
-        ${kpi('Total holder reward pool / day', usd(pool))}
-        ${kpi('Your expected reward / day', usd(daily))}
-        ${kpi('Per week / month / year', `${usd(daily * 7)} / ${usd(daily * 30)} / ${usd(daily * 365)}`)}
-        ${kpi('Yield (APR on position value)', nf(apr * 100, 1) + '%')}
-        ${kpi('Paid in kind, per day', `${compact(brokerDaily)} BROKER + ${compact(edelDaily)} EDEL`)}
-        ${kpi('Days of rewards to offset a 5% price drop', daily > 0 ? nf((holdUsd * 0.05) / daily, 1) + ' days' : '–')}
+        ${kpi('Rewards received (BROKER)', compact(rec.broker) + ' BROKER')}
+        ${kpi('Rewards received (EDEL)', compact(rec.edel) + ' EDEL')}
+        ${kpi('Total value at receipt', usd(earnedUsd) + ` <span class="muted small">${compact(rec.valueEdel)} EDEL</span>`)}
+        ${kpi('Payout transfers', `${nf(rec.claims, 0)} <span class="muted small">${dt(rec.firstTs).slice(0, 10)} → ${dt(rec.lastTs).slice(0, 10)}</span>`)}
+        ${kpi('BROKER balance now', s.balance == null ? '–' : compact(s.balance) + ` <span class="muted small">${usd(pos)}</span>`)}
+        ${kpi('Realized APR on current balance', realizedApr == null ? '–' : nf(realizedApr * 100, 0) + '%' + ` <span class="muted small">over ${days.toFixed(1)} days</span>`)}
+        ${kpi('Forward: reward / day (24h volume)', usd(fwd24))}
+        ${kpi('Forward: yearly at today’s conditions', `${usd(fwd24 * 365)} <span class="muted small">≈ ${pos > 0 ? nf(fwd24 * 365 / pos * 100, 0) + '% APR' : '–'}</span>`)}
       </div>
       <div class="grid two">
-        ${win('DAILY_REWARD.TABLE <span class="muted">(USD, rows: volume · cols: market cap ×)</span>', `<div class="tablewrap"><table><thead><tr><th class="l">Volume</th>${capMult.map((m) => `<th>${m}× cap</th>`).join('')}</tr></thead><tbody>${gridDaily}</tbody></table></div>
-          <div class="small muted" style="margin-top:6px">${s.mode === 'tokens' ? 'You hold a fixed token count, so market cap changes your position value, not your reward.' : 'You fixed a USD amount at the current market cap; a higher cap on the same tokens changes the value only.'}</div>`)}
-        ${win('APR.TABLE <span class="muted">(% per year, same axes)</span>', `<div class="tablewrap"><table><thead><tr><th class="l">Volume</th>${capMult.map((m) => `<th>${m}× cap</th>`).join('')}</tr></thead><tbody>${gridApr}</tbody></table></div>
-          <div class="small muted" style="margin-top:6px">APR = rate × volume × 365 ÷ eligible market cap — the same for any holding size.</div>`)}
+        ${win('CUMULATIVE_REWARDS.CHART <span class="muted">(USD at receipt)</span>', '<div class="chartbox" style="height:220px"><canvas id="c-mine"></canvas></div>')}
+        ${win('YIELD_NOTES.TXT', `<table><tbody>
+          <tr><td class="l">Realized: rewards ÷ current position × 365 ÷ ${days.toFixed(1)}d</td><td>${realizedApr == null ? '–' : nf(realizedApr * 100, 0) + '% APR'}</td></tr>
+          <tr><td class="l">Forward, 24h volume ${'$' + compact(vol24)}</td><td>${usd(fwd24 * 365)} / yr · ${pos > 0 ? nf(fwd24 * 365 / pos * 100, 0) : '–'}% APR</td></tr>
+          <tr><td class="l">Forward, period-average volume ${'$' + compact(volAvg)}</td><td>${usd(fwdAvg * 365)} / yr · ${pos > 0 ? nf(fwdAvg * 365 / pos * 100, 0) : '–'}% APR</td></tr>
+          <tr><td class="l">APY if re-invested daily (theoretical)</td><td>${pos > 0 && fwd24 * 365 / pos < 20 ? nf(apy(fwd24 * 365 / pos) * 100, 0) + '%' : 'not meaningful at this APR'}</td></tr>
+          ${w ? `<tr><td class="l">Your trading PnL in this pool</td><td>${sgn(w.total)}</td></tr>` : ''}
+        </tbody></table>
+        ${note('“Realized APR” divides what you earned by your <i>current</i> position, so it is only meaningful if your balance was roughly constant. “Forward” assumes today’s volume and price hold for a year. Neither includes price changes of BROKER itself, which usually dominate.')}`)}
       </div>`;
+    let cum = 0;
+    const pts = rec.ev.map(([ts, tok, amt]) => { cum += (tok ? amt : amt * priceAtTs(ts)) * D.edelUsd; return { x: ts, y: +cum.toFixed(4) }; });
+    draw('c-mine', { type: 'line', data: { datasets: [{ data: pts, borderColor: '#000', backgroundColor: css('acid'), pointRadius: 0, borderWidth: 2, stepped: true, fill: true }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: timeAxis } } });
+    scenario();
   };
-  const bind = (id, key, fn = Number) => $k(id).addEventListener('input', (e) => { s[key] = fn(e.target.value) || 0; s.touched = true; sync(); calc(); });
-  const sync = () => { $k('k-mcap-r').value = valToLog(s.mcap); $k('k-vol-r').value = valToLog(s.vol); };
-  bind('k-amount', 'amount'); bind('k-mcap', 'mcap'); bind('k-vol', 'vol'); bind('k-rate', 'rate'); bind('k-buy', 'buyShare'); bind('k-excl', 'excluded');
-  $k('k-mcap-r').addEventListener('input', (e) => { s.mcap = Math.round(logToVal(+e.target.value)); $k('k-mcap').value = s.mcap; s.touched = true; calc(); });
-  $k('k-vol-r').addEventListener('input', (e) => { s.vol = Math.round(logToVal(+e.target.value)); $k('k-vol').value = s.vol; s.touched = true; calc(); });
-  $k('k-mode').addEventListener('change', (e) => {
-    s.mode = e.target.value; s.touched = true;
-    $k('k-amount-l').textContent = s.mode === 'tokens' ? 'BROKER held' : 'USD value held';
-    if (s.mode === 'usd') s.amount = Math.round(s.amount * (s.mcap / supply)); else s.amount = Math.round(s.amount / (s.mcap / supply));
-    $k('k-amount').value = s.amount; calc();
-  });
-  $k('k-reset').addEventListener('click', () => { calcState.touched = false; Object.assign(calcState, defaults); renderCalc(); });
-  $k('k-amount-l').textContent = s.mode === 'tokens' ? 'BROKER held' : 'USD value held';
-  calc();
+
+  // ----- wiring -----
+  $k('k-look').addEventListener('click', lookup);
+  $k('k-addr').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
+  $k('k-amount').addEventListener('input', (e) => { s.balance = +e.target.value || 0; scenario(); });
+  $k('k-rate').addEventListener('input', (e) => { s.rate = +e.target.value || 0; scenario(); });
+  $k('k-vbase').addEventListener('change', (e) => { s.volBase = e.target.value; renderCalc(); });
+  $k('k-mm-r').addEventListener('input', (e) => { s.mcapMult = fromLog(+e.target.value); scenario(); });
+  $k('k-vm-r').addEventListener('input', (e) => { s.volMult = fromLog(+e.target.value); scenario(); });
+  document.querySelectorAll('#calc .chips').forEach((box) => box.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return; s[box.dataset.for] = +b.dataset.v; scenario();
+  }));
+  scenario();
+  if (s.addr && ADDR_RE.test(s.addr)) lookup();
 }
 
 // ---------- LP ----------

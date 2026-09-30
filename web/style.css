@@ -111,3 +111,6 @@ input[type=search]:focus, select:focus { outline: none; background: #fffbd0; }
 
 footer { margin-top: 28px; font-size: 12px; }
 footer .win .body { padding: 10px 14px; }
+
+.chip { padding: 2px 10px; font-size: 11px; margin: 4px 4px 0 0; box-shadow: 2px 2px 0 #000; }
+label { display: block; }
