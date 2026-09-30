@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPublicClient, http, toHex, toEventSelector, getAbiItem, formatUnits, pad } from 'viem';
+import { createPublicClient, http, parseAbi, toHex, toEventSelector, getAbiItem, formatUnits, pad } from 'viem';
 import { base } from 'viem/chains';
 import * as C from './config.mjs';
 import { erc20 } from './abi.mjs';
@@ -128,6 +128,52 @@ for (let i = 0; i < unknown.length; i += 25) {
 }
 holders.forEach((h) => { h.isContract = codeFlags.get(h.address) || false; });
 
+// Tracker accounting (its source is unverified; these are its own view functions):
+//   pendingOf(a)      accrued, not yet delivered, in the pair token (EDEL)
+//   pendingTokenOf(a) accrued, not yet delivered, in BROKER
+//   holders(a)[0]     the holder's current reward shares
+const trAbi = parseAbi(['function pendingOf(address) view returns (uint256)', 'function pendingTokenOf(address) view returns (uint256)', 'function holders(address) view returns (uint256,uint256,uint256,uint256)']);
+// Try each provider in turn; a batch counts as answered only if most calls succeed (public RPCs silently fail on big multicalls).
+async function tryMulticall(contracts) {
+  for (const cl of [client, logsClient]) {
+    try {
+      const r = await cl.multicall({ allowFailure: true, contracts });
+      if (r.filter((x) => x.status === 'success').length >= contracts.length * 0.9) return r;
+    } catch { /* next provider */ }
+  }
+  return null;
+}
+for (let i = 0; i < holders.length; i += 50) {
+  const sl = holders.slice(i, i + 50);
+  const contracts = sl.flatMap((h) => [
+    { address: tracker, abi: trAbi, functionName: 'pendingOf', args: [h.address] },
+    { address: tracker, abi: trAbi, functionName: 'pendingTokenOf', args: [h.address] },
+    { address: tracker, abi: trAbi, functionName: 'holders', args: [h.address] }]);
+  let res = null;
+  for (let attempt = 0; attempt < 5 && !res; attempt++) {
+    res = await tryMulticall(contracts);
+    if (!res) await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+  }
+  sl.forEach((h, k) => {
+    const [p, t, sh] = res ? [res[k * 3], res[k * 3 + 1], res[k * 3 + 2]] : [{}, {}, {}];
+    h.pendE = p.status === 'success' ? +num(p.result).toFixed(4) : null;
+    h.pendB = t.status === 'success' ? +num(t.result).toFixed(2) : null;
+    h.shares = sh.status === 'success' ? +num(sh.result[0]).toFixed(2) : null;
+  });
+  if (i % 500 === 0) process.stdout.write(`  pending ${i}/${holders.length}   `);
+}
+process.stdout.write('\n');
+const unanswered = holders.filter((h) => h.pendE == null).length;
+if (unanswered) console.warn(`WARNING: ${unanswered} holders have no pending reading — pending totals are undercounted`);
+const pend = { unanswered: 0, edel: 0, broker: 0, activeEdel: 0, activeBroker: 0, zeroShareBroker: 0, zeroShareHolders: 0, holdersWithPending: 0 };
+for (const h of holders) {
+  if (h.pendE == null) { pend.unanswered++; continue; }
+  if (!(h.pendE > 0 || h.pendB > 0)) continue;
+  pend.holdersWithPending++; pend.edel += h.pendE || 0; pend.broker += h.pendB || 0;
+  if (h.shares > 0) { pend.activeEdel += h.pendE || 0; pend.activeBroker += h.pendB || 0; }
+  else { pend.zeroShareBroker += h.pendB || 0; pend.zeroShareHolders++; }
+}
+
 const summary = (name, bal_) => {
   const k = tokens[name];
   return { in: k.in, inFromHook: k.inFromHook, inOther: k.inOther, out: k.out, claims: k.claims, recipients: k.holders.size, balance: bal_ };
@@ -136,6 +182,7 @@ const res = {
   generatedAt: Math.floor(Date.now() / 1000), lastBlock: Number(latest), tracker,
   firstInTs, lastClaimTs: lastOutTs,
   BROKER: summary('BROKER', balB), EDEL: summary('EDEL', balE),
+  pending: pend,
   uniqueRecipients: holders.length, contractRecipients: holders.filter((h) => h.isContract).length,
   holders: holders.sort((a, b) => b.edel + b.broker * analytics.markPrice - (a.edel + a.broker * analytics.markPrice)),
 };

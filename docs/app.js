@@ -261,10 +261,12 @@ function renderRewards() {
       ${kpi('Payout transfers', nf(R.EDEL.claims + R.BROKER.claims, 0))}
       ${kpi('Received by tracker (EDEL)', `${money(R.EDEL.in)} <span class="muted small">${pct(ratio(R.EDEL.out, R.EDEL.in))} paid out</span>`)}
       ${kpi('Received by tracker (BROKER)', `${compact(R.BROKER.in)} <span class="muted small">${pct(ratio(R.BROKER.out, R.BROKER.in))} paid out</span>`)}
-      ${kpi('Still in tracker (unclaimed)', `${money(R.EDEL.balance)} + ${compact(R.BROKER.balance)} BROKER`)}
+      ${R.pending ? kpi('Accrued, not yet delivered (all holders)', `${compact(R.pending.edel)} EDEL + ${compact(R.pending.broker)} BROKER <span class="muted small">${nf(R.pending.holdersWithPending, 0)} holders</span>`) : ''}
+      ${kpi('Cash in tracker now', `${money(R.EDEL.balance)} + ${compact(R.BROKER.balance)} BROKER`)}
       ${kpi('First deposit → last claim', `${dt(R.firstInTs).slice(5, 10)} → ${dt(R.lastClaimTs).slice(5, 10)}`)}
     </div>
     ${note(`<b>Mechanism.</b> The hook’s <code>afterSwap</code> only sends 85% of the creator share of every tax to the payee <code>${short(R.tracker)}</code> (the token’s <code>rewardTracker</code>) — a plain transfer. The <i>payout to holders</i> is triggered by the BROKER token itself: its <code>_update</code> calls <code>tracker.ping(from, to, value)</code> (up to 5M gas, failures ignored) after <b>every</b> BROKER transfer, so each trade advances a queue of holders and pays them automatically; <code>claim()</code> is optional. Figures are rebuilt from BROKER/EDEL <code>Transfer</code> logs to/from the tracker (its source is unverified). BROKER is valued at the last price (${price(mark)}${usdOK() ? '' : ' EDEL'}).${R.api ? ` Cross-check with the launchpad API: rewardsToken ${compact(R.api.rewardsToken)} BROKER, rewardsPair ${compact(R.api.rewardsPair)} EDEL, ${nf(R.api.holders, 0)} holders.` : ''}`)}
+    ${R.pending ? note(`<b>Undelivered accruals vs cash.</b> The tracker’s own accounting shows ${compact(R.pending.edel)} EDEL and ${compact(R.pending.broker)} BROKER accrued but not yet delivered across ${nf(R.pending.holdersWithPending, 0)} holders — of which ${compact(R.pending.zeroShareBroker)} BROKER sits with ${nf(R.pending.zeroShareHolders, 0)} addresses that no longer hold any (zero reward shares). The contract currently holds only ${compact(R.BROKER.balance)} BROKER and ${compact(R.EDEL.balance)} EDEL, so these accruals cannot all be paid from cash on hand; a <code>claim()</code> then emits <code>DeliveryDeferred</code> and moves nothing (simulated). Payouts you actually receive are the token transfers counted above. The tracker is unverified, so I cannot say whether the surplus is stale accounting or a real shortfall.`) : ''}
     <div class="grid two">
       ${win(`TOP_RECIPIENTS.CHART <span class="muted">(value in ${usdOK() ? 'USD' : 'EDEL'})</span>`, '<div class="chartbox"><canvas id="c-rw"></canvas></div>')}
       ${win('DISTRIBUTION_STATS.TXT', `<table><tbody>
@@ -279,14 +281,14 @@ function renderRewards() {
     </div>
     <div style="height:18px"></div>
     ${win('REWARD_RECIPIENTS.LOG', `<div class="toolbar"><input type="search" id="rq" placeholder="Search address…"><select id="rk"><option value="all">All recipients</option><option value="wallet">EOAs only</option><option value="contract">Contracts / smart wallets only</option></select><span class="muted small" id="rcount"></span></div>
-      <div class="tablewrap"><table><thead><tr><th class="l">Address</th><th>Type</th><th>BROKER received</th><th>EDEL received</th><th>Total value</th><th>Claims</th><th>Last claim block</th><th>Trading PnL</th></tr></thead><tbody></tbody></table></div>`)}`;
+      <div class="tablewrap"><table><thead><tr><th class="l">Address</th><th>Type</th><th>BROKER received</th><th>EDEL received</th><th>Total value</th><th>Claims</th><th>Pending B / E</th><th>Last claim block</th><th>Trading PnL</th></tr></thead><tbody></tbody></table></div>`)}`;
   const fill = () => {
     const q = $('#rq').value.trim().toLowerCase(), k = $('#rk').value;
     const rows = R.holders.filter((h) => (!q || h.address.includes(q)) && (k === 'all' || (k === 'contract') === h.isContract));
     $('#rcount').textContent = `${rows.length} addresses${rows.length > 500 ? ' (showing top 500)' : ''}`;
     $('#rewards tbody').innerHTML = rows.slice(0, 500).map((h) => {
       const w = pnl.get(h.address);
-      return `<tr><td class="l">${addr(h.address)}</td><td>${h.isContract ? '<span class="tag">contract</span>' : 'EOA'}</td><td>${compact(h.broker)}</td><td>${compact(h.edel)}</td><td>${money(val(h))}</td><td>${h.claims}</td><td>${h.lastBlock}</td><td>${w ? sgn(w.total) : '<span class="muted">–</span>'}</td></tr>`;
+      return `<tr><td class="l">${addr(h.address)}</td><td>${h.isContract ? '<span class="tag">contract</span>' : 'EOA'}</td><td>${compact(h.broker)}</td><td>${compact(h.edel)}</td><td>${money(val(h))}</td><td>${h.claims}</td><td>${h.pendB == null ? '–' : compact(h.pendB) + ' / ' + compact(h.pendE)}</td><td>${h.lastBlock}</td><td>${w ? sgn(w.total) : '<span class="muted">–</span>'}</td></tr>`;
     }).join('');
   };
   $('#rq').oninput = fill; $('#rk').onchange = fill; fill();
@@ -304,6 +306,23 @@ const calcState = { addr: '', balance: null, mcapMult: 1, volMult: 1, volBase: '
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 try { calcState.addr = localStorage.getItem('bca-addr') || ''; } catch { /* storage may be unavailable */ }
 
+async function rpcCall(to, data) {
+  for (const url of RPCS) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to, data }, 'latest'] }) });
+      const j = await r.json();
+      if (j.result && j.result !== '0x') return BigInt(j.result);
+    } catch { /* try next RPC */ }
+  }
+  return null;
+}
+// Tracker views (unverified contract, selectors recovered from its bytecode): pendingOf(address) -> EDEL, pendingTokenOf(address) -> BROKER.
+async function rpcPending(a) {
+  const arg = a.slice(2).toLowerCase().padStart(64, '0');
+  const [pe, pt] = await Promise.all([rpcCall(R.tracker, '0xf44136a1' + arg), rpcCall(R.tracker, '0xfdebf35e' + arg)]);
+  return pe == null && pt == null ? null : { edel: Number(pe ?? 0n) / 1e18, broker: Number(pt ?? 0n) / 1e18 };
+}
 async function rpcBalance(a) {
   const data = '0x70a08231' + a.slice(2).toLowerCase().padStart(64, '0');
   for (const url of RPCS) {
@@ -427,14 +446,14 @@ function renderCalc() {
     const al = a.toLowerCase();
     const rec = R?.holders.find((h) => h.address === al);
     const w = D.wallets.find((x) => x.address === al);
-    const bal = await rpcBalance(a);
+    const [bal, pend] = await Promise.all([rpcBalance(a), R ? rpcPending(a) : null]);
     st.textContent = bal == null ? 'Could not read the balance from public RPCs — enter it manually below.' : '';
     s.balance = bal ?? s.balance;
     if (bal != null) $k('k-amount').value = bal;
     const pos = (s.balance ?? 0) * priceNow;
     if (!rec) {
       out.innerHTML = note(`No holder-reward payouts found for <code>${short(a)}</code> in the indexed data (through block ${R?.lastBlock ?? '–'}). ${bal != null ? `It holds ${compact(bal)} BROKER now. ` : ''}It may have bought after the last index run, hold through a contract, or be excluded.`) +
-        (s.balance ? `<div class="grid kpis">${kpi('BROKER balance now', compact(s.balance) + ` <span class="muted small">${usd(pos)}</span>`)}</div>` : '');
+        (s.balance ? `<div class="grid kpis">${kpi('BROKER balance now', compact(s.balance) + ` <span class="muted small">${usd(pos)}</span>`)}${pend ? kpi('Accrued, not yet delivered', `${compact(pend.edel)} EDEL + ${compact(pend.broker)} BROKER`) : ''}</div>` : '');
       scenario(); return;
     }
     const earnedUsd = rec.valueEdel * D.edelUsd;
@@ -449,11 +468,13 @@ function renderCalc() {
         ${kpi('Rewards received (EDEL)', compact(rec.edel) + ' EDEL')}
         ${kpi('Total value at receipt', usd(earnedUsd) + ` <span class="muted small">${compact(rec.valueEdel)} EDEL</span>`)}
         ${kpi('Payout transfers', `${nf(rec.claims, 0)} <span class="muted small">${dt(rec.firstTs).slice(0, 10)} → ${dt(rec.lastTs).slice(0, 10)}</span>`)}
+        ${pend ? kpi('Accrued, not yet delivered (live)', `${compact(pend.edel)} EDEL + ${compact(pend.broker)} BROKER <span class="muted small">≈ ${usd(pend.edel * D.edelUsd + pend.broker * priceNow)}</span>`) : ''}
         ${kpi('BROKER balance now', s.balance == null ? '–' : compact(s.balance) + ` <span class="muted small">${usd(pos)}</span>`)}
         ${kpi('Realized APR on current balance', realizedApr == null ? '–' : nf(realizedApr * 100, 0) + '%' + ` <span class="muted small">over ${days.toFixed(1)} days</span>`)}
         ${kpi('Forward: reward / day (24h volume)', usd(fwd24))}
         ${kpi('Forward: yearly at today’s conditions', `${usd(fwd24 * 365)} <span class="muted small">≈ ${pos > 0 ? nf(fwd24 * 365 / pos * 100, 0) + '% APR' : '–'}</span>`)}
       </div>
+      ${pend ? note('<b>Accrued, not yet delivered</b> is read live from the tracker (<code>pendingOf</code> / <code>pendingTokenOf</code>). It is paid automatically when the holder queue reaches you, or immediately if you press <b>Claim</b> (which calls <code>claim()</code>). Claiming only pulls your payout forward — it is not extra. If the tracker has no cash on hand at that moment the delivery is deferred (<code>DeliveryDeferred</code>) and the amount stays accrued. The tracker is unverified and these numbers change with every trade.') : ''}
       <div class="grid two">
         ${win('CUMULATIVE_REWARDS.CHART <span class="muted">(USD at receipt)</span>', '<div class="chartbox" style="height:220px"><canvas id="c-mine"></canvas></div>')}
         ${win('YIELD_NOTES.TXT', `<table><tbody>
