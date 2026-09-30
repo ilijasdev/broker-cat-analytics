@@ -50,7 +50,7 @@ async function load() {
   if (!D.edelUsd) document.querySelector('input[value=usd]').closest('label').hidden = true;
   renderAll();
 }
-const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderRewards(); renderCalc(); renderLp(); renderRisk(); };
+const renderAll = () => { renderOverview(); renderWallets(); renderHook(); renderRewards(); renderCalc(); renderLp(); renderRisk(); };
 
 // ---------- overview ----------
 function renderOverview() {
@@ -194,22 +194,6 @@ function openWallet(a) {
     options: { scales: { x: timeAxis } } });
 }
 $('#drawer-close').onclick = () => { $('#drawer').hidden = true; };
-
-// ---------- trades ----------
-function renderTrades() {
-  $('#trades').innerHTML = win('TRADES.LOG', `
-    <div class="toolbar"><input type="search" id="tq" placeholder="Filter by address…"><select id="ts"><option value="">All sides</option><option value="buy">Buys</option><option value="sell">Sells</option></select>
-    <select id="tmin"><option value="0">Any size</option><option value="1000">≥ 1k EDEL</option><option value="10000">≥ 10k EDEL</option><option value="100000">≥ 100k EDEL</option></select>
-    <span class="muted small">latest 600 matches</span></div>
-    <div class="tablewrap"><table><thead><tr><th class="l">Time (UTC)</th><th>Side</th><th class="l">Wallet</th><th>BROKER</th><th>EDEL</th><th>Price</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>`);
-  const fill = () => {
-    const q = $('#tq').value.trim().toLowerCase(), s = $('#ts').value, m = +$('#tmin').value;
-    const rows = D.trades.filter((t) => (!q || t.trader.includes(q)) && (!s || t.side === s) && t.edel >= m).slice(-600).reverse();
-    $('#trades tbody').innerHTML = rows.map((t) => `<tr><td class="l">${dt(t.ts)}</td><td><span class="tag ${t.side}">${t.side}</span></td><td class="l">${addr(t.trader)}</td><td>${compact(t.broker)}</td><td>${compact(t.edel)}</td><td>${price(t.price)}</td><td class="muted small">${t.viaRouter ? 'via router ' : ''}${t.multi ? 'multi-swap' : ''}</td><td>${txl(t.tx)}</td></tr>`).join('');
-  };
-  ['tq', 'ts', 'tmin'].forEach((i) => ($('#' + i).oninput = fill));
-  fill();
-}
 
 // ---------- hook & tax ----------
 function renderHook() {

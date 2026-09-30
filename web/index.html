@@ -37,24 +37,22 @@
   <nav id="tabs">
     <button data-tab="overview" class="active">Overview</button>
     <button data-tab="wallets">Wallets &amp; PnL</button>
-    <button data-tab="trades">Trades</button>
     <button data-tab="hook">Hook &amp; tax</button>
     <button data-tab="rewards">Holder rewards</button>
     <button data-tab="calc">Reward calculator</button>
     <button data-tab="lp">Liquidity</button>
-    <button data-tab="risk">Risks</button>
+    <button data-tab="risk" style="display:none">Risks</button>
   </nav>
 
   <main>
     <div id="loading" class="note">Loading <code>data/analytics.json</code>… (run <code>npm run index</code> first if it does not exist)</div>
     <section id="overview" class="tab"></section>
     <section id="wallets" class="tab" hidden></section>
-    <section id="trades" class="tab" hidden></section>
     <section id="hook" class="tab" hidden></section>
     <section id="rewards" class="tab" hidden></section>
     <section id="calc" class="tab" hidden></section>
     <section id="lp" class="tab" hidden></section>
-    <section id="risk" class="tab" hidden></section>
+    <section id="risk" class="tab" hidden style="display:none"></section>
   </main>
 
   <footer>
