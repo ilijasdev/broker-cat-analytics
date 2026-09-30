@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Broker Cat Analytics</title>
+<meta name="description" content="Community on-chain analytics for $BROKER / $EDEL on Uniswap v4 (Base): trades, per-wallet PnL, hook taxes and LP.">
+<link rel="icon" type="image/jpeg" href="assets/broker-avatar.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Silkscreen:wght@400;700&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="shell">
+  <div class="win">
+    <div class="bar"><span class="dots"><i></i><i></i><i></i></span>BROKER_OS v1.0 — ANALYTICS.EXE</div>
+    <div class="body top">
+      <div class="brand">
+        <img src="assets/broker-avatar.jpg" alt="Broker Cat">
+        <div>
+          <h1>BROKER CAT ANALYTICS</h1>
+          <div class="sub">$BROKER / $EDEL · UNISWAP V4 · BASE</div>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="seg"><input type="radio" name="unit" value="edel" checked><span>EDEL</span></label>
+        <label class="seg"><input type="radio" name="unit" value="usd"><span>USD</span></label>
+        <a class="pill" href="https://www.brokercat.xyz/" target="_blank" rel="noopener">brokercat.xyz ↗</a>
+      </div>
+    </div>
+  </div>
+
+  <div id="asof" class="stamp">loading…</div>
+
+  <nav id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="wallets">Wallets &amp; PnL</button>
+    <button data-tab="trades">Trades</button>
+    <button data-tab="hook">Hook &amp; tax</button>
+    <button data-tab="lp">Liquidity</button>
+    <button data-tab="risk">Risks</button>
+  </nav>
+
+  <main>
+    <div id="loading" class="note">Loading <code>data/analytics.json</code>… (run <code>npm run index</code> first if it does not exist)</div>
+    <section id="overview" class="tab"></section>
+    <section id="wallets" class="tab" hidden></section>
+    <section id="trades" class="tab" hidden></section>
+    <section id="hook" class="tab" hidden></section>
+    <section id="lp" class="tab" hidden></section>
+    <section id="risk" class="tab" hidden></section>
+  </main>
+
+  <footer>
+    <div class="win"><div class="body">
+      Unofficial community dashboard built from public Base on-chain data (Uniswap v4 PoolManager events, token transfers, hook events).
+      Not affiliated with the project. Not financial advice. PnL is an estimate — see the notes on each tab.
+    </div></div>
+  </footer>
+</div>
+
+<aside id="drawer" hidden>
+  <button id="drawer-close" class="pill" aria-label="Close">✕ close</button>
+  <div id="drawer-body"></div>
+</aside>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>

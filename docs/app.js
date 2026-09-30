@@ -1,0 +1,324 @@
+const $ = (s, r = document) => r.querySelector(s);
+const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
+let D = null, unit = 'edel';
+const charts = {};
+
+// ---------- formatting ----------
+const nf = (n, d = 2) => (n == null || !isFinite(n) ? '–' : n.toLocaleString('en-US', { maximumFractionDigits: d, minimumFractionDigits: 0 }));
+const compact = (n) => (n == null || !isFinite(n) ? '–' : Math.abs(n) >= 1e6 ? nf(n / 1e6, 2) + 'M' : Math.abs(n) >= 1e3 ? nf(n / 1e3, 2) + 'k' : nf(n, Math.abs(n) < 1 ? 4 : 2));
+const usdOK = () => unit === 'usd' && D.edelUsd;
+const money = (edel) => (usdOK() ? '$' + compact(edel * D.edelUsd) : compact(edel) + ' EDEL');
+const moneyPlain = (edel) => (usdOK() ? edel * D.edelUsd : edel);
+const sgn = (edel) => `<span class="${edel > 0 ? 'pos' : edel < 0 ? 'neg' : ''}">${edel > 0 ? '+' : ''}${money(edel)}</span>`;
+const pct = (x) => (x == null ? '–' : `${(x * 100).toFixed(1)}%`);
+const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
+const addr = (a) => `<a href="https://basescan.org/address/${a}" target="_blank" rel="noopener">${short(a)}</a>`;
+const txl = (h, t = 'tx') => `<a href="https://basescan.org/tx/${h}" target="_blank" rel="noopener">${t}</a>`;
+const dt = (ts) => (ts ? new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 16) : '–');
+const price = (p) => (usdOK() ? '$' + (p * D.edelUsd).toPrecision(3) : p.toPrecision(3));
+const bpsPct = (x) => (x == null ? '–' : (x / 100).toFixed(2) + '%');
+
+const win = (title, body, cls = '') =>
+  `<div class="win ${cls}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span>${title}</div><div class="body">${body}</div></div>`;
+const kpi = (l, v) => `<div class="win kpi"><div class="body"><div class="v">${v}</div><div class="l">${l}</div></div></div>`;
+const note = (t) => `<div class="note">${t}</div>`;
+
+// ---------- charts ----------
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(`--${n}`).trim();
+function draw(id, cfg) {
+  charts[id]?.destroy();
+  const cv = document.getElementById(id);
+  if (!cv) return;
+  Chart.defaults.color = '#0a0c10';
+  Chart.defaults.borderColor = 'rgba(0,0,0,.15)';
+  Chart.defaults.font.family = '"JetBrains Mono", monospace';
+  Chart.defaults.font.size = 11;
+  charts[id] = new Chart(cv, { ...cfg, options: { responsive: true, maintainAspectRatio: false, animation: false, ...cfg.options } });
+}
+const bar = (color) => ({ backgroundColor: color, borderColor: '#000', borderWidth: 2 });
+const timeAxis = { type: 'linear', ticks: { callback: (v) => new Date(v * 1000).toISOString().slice(5, 10), maxTicksLimit: 8 } };
+const dayKey = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
+
+// ---------- load ----------
+async function load() {
+  const r = await fetch('data/analytics.json', { cache: 'no-store' });
+  if (!r.ok) throw new Error('data/analytics.json not found');
+  D = await r.json();
+  $('#loading').hidden = true;
+  $('#asof').textContent = `DATA THROUGH BLOCK ${D.lastBlock} · GENERATED ${dt(D.generatedAt)} UTC · ${D.trades.length} TRADES · ${D.wallets.length} WALLETS`;
+  if (!D.edelUsd) document.querySelector('input[value=usd]').closest('label').hidden = true;
+  renderAll();
+}
+const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderLp(); renderRisk(); };
+
+// ---------- overview ----------
+function renderOverview() {
+  const T = D.trades, W = D.wallets;
+  const vol = T.reduce((a, t) => a + t.edel, 0);
+  const buys = T.filter((t) => t.side === 'buy'), sells = T.filter((t) => t.side === 'sell');
+  const profit = W.filter((w) => w.total > 0).length;
+  const realized = W.reduce((a, w) => a + w.realized, 0);
+  const last24 = T.filter((t) => t.ts > D.generatedAt - 86400);
+  $('#overview').innerHTML = `
+    <div class="grid kpis">
+      ${kpi('Last price', price(D.markPrice) + (usdOK() ? '' : ' EDEL'))}
+      ${kpi('Total volume', money(vol))}
+      ${kpi('Volume, last 24h of data', money(last24.reduce((a, t) => a + t.edel, 0)))}
+      ${kpi('Buys / sells', `${nf(buys.length, 0)} / ${nf(sells.length, 0)}`)}
+      ${kpi('Trading wallets', nf(W.length, 0))}
+      ${kpi('Wallets in profit', `${profit} <span class="muted small">(${pct(profit / (W.length || 1))})</span>`)}
+      ${kpi('Sum of realized PnL', sgn(realized))}
+      ${kpi('Liquidity (DexScreener)', D.dex?.liquidityUsd ? '$' + compact(D.dex.liquidityUsd) : '–')}
+    </div>
+    <div class="grid one">
+      ${win('PRICE_PER_TRADE.CHART', '<div class="chartbox tall"><canvas id="c-price"></canvas></div>')}
+      ${win('DAILY_VOLUME.CHART', '<div class="chartbox tall"><canvas id="c-vol"></canvas></div>')}
+      ${win('NET_FLOW.CHART <span class="muted">(buys − sells)</span>', '<div class="chartbox tall"><canvas id="c-net"></canvas></div>')}
+      ${win('WALLET_PNL_DISTRIBUTION.CHART', '<div class="chartbox tall"><canvas id="c-dist"></canvas></div>')}
+    </div>
+    ${note('PnL uses only trades through this pool (average-cost method, in EDEL). Tokens acquired any other way carry zero cost basis and are flagged as “untracked”. USD uses today’s EDEL/USD rate, not the historical one.')}`;
+
+  draw('c-price', { type: 'line', data: { datasets: [{ data: T.map((t) => ({ x: t.ts, y: moneyPlain(t.price) })), borderColor: '#000', backgroundColor: css('acid'), pointRadius: 0, borderWidth: 2 }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: timeAxis, y: { type: 'logarithmic', ticks: { callback: (v) => Number(v).toPrecision(1) } } } } });
+
+  const days = {};
+  for (const t of T) (days[dayKey(t.ts)] ??= { buy: 0, sell: 0 })[t.side] += t.edel;
+  const dl = Object.keys(days).sort();
+  draw('c-vol', { type: 'bar', data: { labels: dl, datasets: [
+    { label: 'Buys', data: dl.map((d) => moneyPlain(days[d].buy)), ...bar(css('acid')), stack: 's' },
+    { label: 'Sells', data: dl.map((d) => moneyPlain(days[d].sell)), ...bar(css('coral')), stack: 's' }] },
+    options: { scales: { x: { stacked: true, ticks: { maxTicksLimit: 8 } }, y: { stacked: true } } } });
+  draw('c-net', { type: 'bar', data: { labels: dl, datasets: [{ data: dl.map((d) => moneyPlain(days[d].buy - days[d].sell)),
+    ...bar(dl.map((d) => (days[d].buy >= days[d].sell ? css('acid') : css('coral')))) }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } } });
+
+  const edges = [-Infinity, -1000, -100, -10, -1, 0, 1, 10, 100, 1000, Infinity];
+  const labels = ['< -1k', '-1k…-100', '-100…-10', '-10…-1', '-1…0', '0…1', '1…10', '10…100', '100…1k', '> 1k'];
+  const counts = new Array(labels.length).fill(0);
+  for (const w of W) { const v = moneyPlain(w.total); for (let i = 0; i < labels.length; i++) if (v >= edges[i] && v < edges[i + 1]) { counts[i]++; break; } }
+  draw('c-dist', { type: 'bar', data: { labels, datasets: [{ data: counts, ...bar(labels.map((_, i) => (i < 5 ? css('coral') : css('acid')))) }] },
+    options: { plugins: { legend: { display: false } } } });
+}
+
+// ---------- wallets ----------
+const walletCols = [
+  ['address', 'Wallet', (w) => addr(w.address), 'l'],
+  ['trades', 'Buys/Sells', (w) => `${w.buys}/${w.sells}`],
+  ['spentEdel', 'Spent', (w) => money(w.spentEdel)],
+  ['receivedEdel', 'Received', (w) => money(w.receivedEdel)],
+  ['position', 'Position (BROKER)', (w) => compact(w.position)],
+  ['avgCost', 'Avg cost', (w) => (w.avgCost ? price(w.avgCost) : '–')],
+  ['realized', 'Realized', (w) => sgn(w.realized)],
+  ['unrealized', 'Unrealized', (w) => sgn(w.unrealized)],
+  ['total', 'Total PnL', (w) => sgn(w.total)],
+  ['roi', 'ROI', (w) => (w.roi == null ? '–' : `<span class="${w.roi >= 0 ? 'pos' : 'neg'}">${pct(w.roi)}</span>`)],
+  ['winRate', 'Win %', (w) => pct(w.winRate)],
+  ['balance', 'Balance now', (w) => (w.balance == null ? '–' : compact(w.balance))],
+  ['lastTs', 'Last trade', (w) => dt(w.lastTs)],
+];
+const wstate = { sort: 'total', asc: false, q: '', min: 1, view: 'all' };
+
+function renderWallets() {
+  $('#wallets').innerHTML = win('WALLET_PNL.EXE', `
+    <div class="toolbar">
+      <input type="search" id="wq" placeholder="Search address…" value="${wstate.q}">
+      <select id="wview">
+        <option value="all">All wallets</option><option value="winners">In profit</option><option value="losers">In loss</option>
+        <option value="open">Open position</option><option value="closed">Closed position</option>
+        <option value="untracked">Sold “untracked” tokens</option>
+      </select>
+      <select id="wmin"><option value="1">≥ 1 trade</option><option value="2">≥ 2 trades</option><option value="5">≥ 5 trades</option><option value="20">≥ 20 trades</option></select>
+      <span class="muted small" id="wcount"></span>
+    </div>
+    <div class="tablewrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>
+    ${note('Total = realized + unrealized (position × last price − cost basis). “Balance now” is the live BROKER balance; if it exceeds the tracked position, the wallet got tokens outside this pool. Click a row for details.')}`);
+  $('#wview').value = wstate.view; $('#wmin').value = wstate.min;
+  const head = $('#wallets thead tr');
+  walletCols.forEach(([k, label], i) => {
+    const th = el(`<th class="${i === 0 ? 'l' : ''}">${label}</th>`);
+    th.dataset.k = k; head.append(th);
+    th.onclick = () => { wstate.asc = wstate.sort === k ? !wstate.asc : false; wstate.sort = k; fillWallets(); };
+  });
+  $('#wq').oninput = (e) => { wstate.q = e.target.value.trim().toLowerCase(); fillWallets(); };
+  $('#wview').onchange = (e) => { wstate.view = e.target.value; fillWallets(); };
+  $('#wmin').onchange = (e) => { wstate.min = +e.target.value; fillWallets(); };
+  fillWallets();
+}
+
+function fillWallets() {
+  const f = {
+    all: () => true, winners: (w) => w.total > 0, losers: (w) => w.total < 0, open: (w) => w.position > 1e-6,
+    closed: (w) => w.position <= 1e-6, untracked: (w) => w.untrackedSold > 1e-6,
+  }[wstate.view];
+  const key = wstate.sort;
+  const rows = D.wallets.filter((w) => f(w) && w.trades >= wstate.min && (!wstate.q || w.address.includes(wstate.q)))
+    .sort((a, b) => { const x = a[key] ?? -Infinity, y = b[key] ?? -Infinity; return (x < y ? -1 : x > y ? 1 : 0) * (wstate.asc ? 1 : -1); });
+  $('#wcount').textContent = `${rows.length} wallets${rows.length > 500 ? ' (showing top 500)' : ''}`;
+  [...$('#wallets thead tr').children].forEach((th) => {
+    th.classList.toggle('sorted', th.dataset.k === key); th.classList.toggle('asc', th.dataset.k === key && wstate.asc);
+  });
+  const tb = $('#wallets tbody'); tb.innerHTML = '';
+  for (const w of rows.slice(0, 500)) {
+    const tr = el(`<tr class="click">${walletCols.map(([, , fn, c]) => `<td class="${c || ''}">${fn(w)}</td>`).join('')}</tr>`);
+    tr.onclick = (e) => { if (e.target.tagName !== 'A') openWallet(w.address); };
+    tb.append(tr);
+  }
+}
+
+function openWallet(a) {
+  const w = D.wallets.find((x) => x.address === a);
+  const mine = D.trades.filter((t) => t.trader === a);
+  $('#drawer').hidden = false;
+  $('#drawer-body').innerHTML = `
+    ${win(`WALLET ${short(a)}`, `
+      <div>${addr(a)} <span class="muted small">· ${nf(w.trades, 0)} trades · ${dt(w.firstTs)} → ${dt(w.lastTs)}</span></div>
+      <div class="grid kpis" style="grid-template-columns:1fr 1fr;margin:12px 0 0">
+        ${kpi(`Total PnL (ROI ${pct(w.roi)})`, sgn(w.total))}
+        ${kpi('Realized', sgn(w.realized))}
+        ${kpi('Unrealized', sgn(w.unrealized))}
+        ${kpi(`Open position${w.avgCost ? ' @ ' + price(w.avgCost) : ''}`, compact(w.position))}
+      </div>
+      ${w.untrackedSold > 1e-6 ? note(`Sold ${compact(w.untrackedSold)} BROKER with no tracked purchase through this pool (booked at zero cost) — realized PnL is probably overstated.`) : ''}
+      ${w.viaRouter ? note(`${w.viaRouter} trades were resolved through a router address (final recipient/sender is followed); attribution may be off for complex aggregators.`) : ''}`)}
+    ${win('CUMULATIVE_PNL.CHART', '<div class="chartbox" style="height:220px"><canvas id="c-wallet"></canvas></div>')}
+    ${win('TRADES.LOG', `<div class="tablewrap" style="max-height:40vh"><table><thead><tr><th class="l">Time (UTC)</th><th>Side</th><th>BROKER</th><th>EDEL</th><th>Price</th><th></th></tr></thead><tbody>
+    ${mine.slice().reverse().map((t) => `<tr><td class="l">${dt(t.ts)}</td><td><span class="tag ${t.side}">${t.side}</span></td><td>${compact(t.broker)}</td><td>${compact(t.edel)}</td><td>${price(t.price)}</td><td>${txl(t.tx)}</td></tr>`).join('')}
+    </tbody></table></div>`)}`;
+  draw('c-wallet', { type: 'line', data: { datasets: [
+    { label: 'Realized', data: w.series.map((s) => ({ x: s[0], y: moneyPlain(s[1]) })), borderColor: '#000', pointRadius: 0, stepped: true, borderWidth: 2 },
+    { label: 'Realized + unrealized', data: w.series.map((s) => ({ x: s[0], y: moneyPlain(s[1] + s[2]) })), borderColor: css('edel'), pointRadius: 0, borderWidth: 2 }] },
+    options: { scales: { x: timeAxis } } });
+}
+$('#drawer-close').onclick = () => { $('#drawer').hidden = true; };
+
+// ---------- trades ----------
+function renderTrades() {
+  $('#trades').innerHTML = win('TRADES.LOG', `
+    <div class="toolbar"><input type="search" id="tq" placeholder="Filter by address…"><select id="ts"><option value="">All sides</option><option value="buy">Buys</option><option value="sell">Sells</option></select>
+    <select id="tmin"><option value="0">Any size</option><option value="1000">≥ 1k EDEL</option><option value="10000">≥ 10k EDEL</option><option value="100000">≥ 100k EDEL</option></select>
+    <span class="muted small">latest 600 matches</span></div>
+    <div class="tablewrap"><table><thead><tr><th class="l">Time (UTC)</th><th>Side</th><th class="l">Wallet</th><th>BROKER</th><th>EDEL</th><th>Price</th><th>Note</th><th></th></tr></thead><tbody></tbody></table></div>`);
+  const fill = () => {
+    const q = $('#tq').value.trim().toLowerCase(), s = $('#ts').value, m = +$('#tmin').value;
+    const rows = D.trades.filter((t) => (!q || t.trader.includes(q)) && (!s || t.side === s) && t.edel >= m).slice(-600).reverse();
+    $('#trades tbody').innerHTML = rows.map((t) => `<tr><td class="l">${dt(t.ts)}</td><td><span class="tag ${t.side}">${t.side}</span></td><td class="l">${addr(t.trader)}</td><td>${compact(t.broker)}</td><td>${compact(t.edel)}</td><td>${price(t.price)}</td><td class="muted small">${t.viaRouter ? 'via router ' : ''}${t.multi ? 'multi-swap' : ''}</td><td>${txl(t.tx)}</td></tr>`).join('');
+  };
+  ['tq', 'ts', 'tmin'].forEach((i) => ($('#' + i).oninput = fill));
+  fill();
+}
+
+// ---------- hook & tax ----------
+function renderHook() {
+  const H = D.hook, c = H?.cfg, I = D.pool.init;
+  const F = D.fees;
+  const tot = F.reduce((a, f) => ({ p: a.p + f.platformEdel, c: a.c + f.creatorEdel }), { p: 0, c: 0 });
+  const vb = D.trades.filter((t) => t.side === 'buy').reduce((a, t) => a + t.edel, 0), vs = D.trades.filter((t) => t.side === 'sell').reduce((a, t) => a + t.edel, 0);
+  const isHook = I && I.hooks.toLowerCase() === D.pool.hookAddress.toLowerCase();
+  $('#hook').innerHTML = `
+    <div class="grid two">
+      ${win('POOL.SYS', `<table><tbody>
+          <tr><td class="l">Pool ID</td><td><code>${D.pool.id.slice(0, 18)}…</code></td></tr>
+          <tr><td class="l">LP fee tier</td><td>${I ? bpsPct(I.fee) + ` (${I.fee})` : '–'}</td></tr>
+          <tr><td class="l">Tick spacing</td><td>${I?.tickSpacing ?? '–'}</td></tr>
+          <tr><td class="l">Hook (from Initialize)</td><td>${I ? addr(I.hooks) : '–'} ${isHook ? '<span class="tag buy">AdvancedFeeHookV6</span>' : '<span class="tag sell">unexpected hook</span>'}</td></tr>
+          <tr><td class="l">currency0 / currency1</td><td>${I ? addr(I.currency0) + ' / ' + addr(I.currency1) : '–'}</td></tr>
+        </tbody></table>
+        ${note('To add liquidity, use exactly this PoolKey: currency0 (BROKER), currency1 (EDEL), the fee and tick spacing above, and this hook address. Any other combination is a different pool.')}`)}
+      ${win('TAX_CONFIG.SYS <span class="muted">(on-chain, immutable)</span>', c ? `<table><tbody>
+          <tr><td class="l">Buy tax</td><td>${bpsPct(c.buyTaxBps)}</td></tr>
+          <tr><td class="l">Sell tax</td><td>${bpsPct(c.sellTaxBps)}</td></tr>
+          <tr><td class="l">Burn share of creator part</td><td>${bpsPct(c.burnBps)}</td></tr>
+          <tr><td class="l">Liquidity share of creator part</td><td>${bpsPct(c.liquidityBps)}</td></tr>
+          <tr><td class="l">Sniper protection</td><td>${c.sniperWindow ? `${c.sniperWindow}s from ${bpsPct(c.sniperStartBps)}, ended ${dt(c.sniperEndsAt)}` : 'not set'}</td></tr>
+        </tbody></table>
+        <h3>Payees</h3>
+        <table><tbody>${(H.payees || []).map((p) => `<tr><td class="l">${addr(p.to)}${p.to.toLowerCase() === (D.token.rewardTracker || '').toLowerCase() ? ' <span class="tag">reward tracker</span>' : ''}</td><td>${bpsPct(p.shareBps)}</td></tr>`).join('') || '<tr><td>–</td></tr>'}</tbody></table>
+        <h3>Roles</h3>
+        <table><tbody><tr><td class="l">Launcher</td><td>${H.launcher ? addr(H.launcher) : '–'}</td></tr>
+        <tr><td class="l">Platform admin</td><td>${H.admin ? addr(H.admin) : '–'}</td></tr>
+        <tr><td class="l">Platform treasury</td><td>${H.treasury ? addr(H.treasury) : '–'}</td></tr></tbody></table>` : '<div class="muted">configOf unavailable (RPC error).</div>')}
+      ${win('TAX_COLLECTED.CHART <span class="muted">(in EDEL)</span>', `<div class="chartbox"><canvas id="c-fees"></canvas></div>
+        <div class="small muted" style="margin-top:8px">Total: platform ${money(tot.p)} · creator/payees ${money(tot.c)}. BROKER-denominated fees are valued at the price of the trade that produced them.</div>`)}
+      ${win('TAX_SUMMARY.TXT', `<table><tbody>
+        <tr><td class="l">Tax collected / total volume</td><td>${pct((tot.p + tot.c) / (vb + vs || 1))}</td></tr>
+        <tr><td class="l">Platform share of tax</td><td>${pct(tot.p / (tot.p + tot.c || 1))}</td></tr>
+        <tr><td class="l">Buy volume</td><td>${money(vb)}</td></tr><tr><td class="l">Sell volume</td><td>${money(vs)}</td></tr>
+        <tr><td class="l">Fee events</td><td>${nf(F.length, 0)}</td></tr></tbody></table>
+        ${note('Fees are charged in the swap’s output currency: buys pay in BROKER, sells pay in EDEL. Tax does not go to LPs — LPs earn only the pool’s LP fee.')}`)}
+    </div>`;
+  const days = {};
+  for (const f of F) { const d = dayKey(f.ts); (days[d] ??= { p: 0, c: 0 }); days[d].p += f.platformEdel; days[d].c += f.creatorEdel; }
+  const dl = Object.keys(days).sort();
+  draw('c-fees', { type: 'bar', data: { labels: dl, datasets: [
+    { label: 'Platform', data: dl.map((d) => moneyPlain(days[d].p)), ...bar(css('cyan')), stack: 's' },
+    { label: 'Creator / payees', data: dl.map((d) => moneyPlain(days[d].c)), ...bar(css('yellow')), stack: 's' }] },
+    options: { scales: { x: { stacked: true, ticks: { maxTicksLimit: 8 } }, y: { stacked: true } } } });
+}
+
+// ---------- LP ----------
+function renderLp() {
+  const L = D.liq;
+  const byPos = {};
+  for (const l of L) {
+    const k = `${l.sender}|${l.salt}|${l.tickLower}|${l.tickUpper}`;
+    (byPos[k] ??= { sender: l.sender, salt: l.salt, lo: l.tickLower, hi: l.tickUpper, net: 0n, n: 0, last: 0 });
+    byPos[k].net += BigInt(l.delta); byPos[k].n++; byPos[k].last = l.ts;
+  }
+  const pos = Object.values(byPos);
+  const zero = '0x' + '0'.repeat(64);
+  $('#lp').innerHTML = `
+    <div class="grid kpis">
+      ${kpi('ModifyLiquidity events', L.length)}
+      ${kpi('Positions with liquidity', pos.filter((p) => p.net > 0n).length)}
+      ${kpi('Adds / removes', `${L.filter((l) => BigInt(l.delta) > 0n).length} / ${L.filter((l) => BigInt(l.delta) < 0n).length}`)}
+      ${kpi('TVL (DexScreener)', D.dex?.liquidityUsd ? '$' + compact(D.dex.liquidityUsd) : '–')}
+    </div>
+    ${win('LP_POSITIONS.LOG', `<div class="tablewrap"><table><thead><tr><th class="l">Sender</th><th class="l">Salt / tokenId</th><th>Tick range</th><th>Net liquidity</th><th>Events</th><th>Last</th></tr></thead><tbody>
+    ${pos.sort((a, b) => (b.net > a.net ? 1 : -1)).map((p) => `<tr><td class="l">${addr(p.sender)}${p.sender === D.pool.hookAddress.toLowerCase() ? ' <span class="tag">hook</span>' : ''}</td><td class="l">${p.salt === zero ? '0' : BigInt(p.salt).toString()}</td><td>${p.lo} … ${p.hi}</td><td>${p.net.toLocaleString('en-US')}</td><td>${p.n}</td><td>${dt(p.last)}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${note(`<b>sender</b> is usually the Uniswap PositionManager and <b>salt</b> is the position NFT’s tokenId — read the owner with <code>ownerOf(tokenId)</code> on the PositionManager. The hook (<code>${short(D.pool.hookAddress)}</code>) adds its own one-sided positions with salt 0.`)}`)}`;
+}
+
+// ---------- risks ----------
+function renderRisk() {
+  const T = D.token, c = D.hook?.cfg;
+  const pmShare = T.totalSupply ? (T.poolManagerBalance ?? 0) / T.totalSupply : null;
+  const maxShare = T.maxWalletBps ? T.maxWalletBps / 10000 : null;
+  const live = [];
+  live.push([T.poolManagerExempt === true ? 'low' : T.poolManagerExempt === false ? 'high' : 'med', 'PoolManager max-wallet exemption',
+    T.poolManagerExempt === true ? 'PoolManager is exempt, so LP deposits and swaps are not blocked by the max-wallet rule.' : T.poolManagerExempt === false ? 'PoolManager is NOT exempt from max wallet — large deposits/swaps could revert.' : 'Could not be read.']);
+  if (pmShare != null) live.push([pmShare > (maxShare ?? 1) ? 'med' : 'low', 'Token concentration in PoolManager', `The PoolManager holds ${pct(pmShare)} of supply (max wallet ${maxShare ? pct(maxShare) : '–'}); it also holds other pools’ tokens.`]);
+  if (c) live.push([Math.max(c.buyTaxBps, c.sellTaxBps) > 2000 ? 'high' : 'low', 'Tax rates', `Buy ${c.buyTaxBps / 100}% · Sell ${c.sellTaxBps / 100}%. Fixed at configuration time (configurePool can only be called once).`]);
+  const top = [...D.wallets].sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0)).slice(0, 10);
+  const topShare = T.totalSupply ? top.reduce((a, w) => a + (w.balance ?? 0), 0) / T.totalSupply : null;
+  if (topShare != null) live.push([topShare > 0.25 ? 'med' : 'low', 'Concentration among traders', `The 10 largest trading wallets hold ${pct(topShare)} of supply.`]);
+
+  const st = [
+    ['med', 'Sandwich / MEV on the buyback-and-burn', '`_buybackAndBurn` swaps inside afterSwap with no price limit. An attacker can push the price before a large sell so the hook buys back at a worse price. The loss is bounded by the burn share of the tax, but it is a direct leak.'],
+    ['med', 'Flash loans and the reward tracker', 'If the tracker distributes by balance at transfer time, a borrowed balance could claim rewards. The 2.5% max wallet limits this, but the tracker source needs to be reviewed.'],
+    ['med', 'Tax avoidance via other venues', 'Tax applies only to swaps in this pool. Empty V2 pairs and other pools (e.g. BROKER/USDC with a different hook) do not apply it, so routing through them avoids tax. The launcher is also fully exempt and sniperExempt addresses skip the sniper decay.'],
+    ['med', 'Burns could silently fail', '`_payOut(BURN)` uses take with try/catch. If a BROKER transfer to dEaD reverts (e.g. max wallet), the amount becomes an ERC-6909 claim instead of being burned. dEaD is currently exempt and holds well under 2.5%, but this must be watched as it grows.'],
+    ['low', 'JIT liquidity', 'Standard v4 vector: add LP before a swap, remove after. Profit is limited to the LP fee because tax does not go to LPs.'],
+    ['low', 'Spot-price manipulation with flash loans', 'The PoolManager’s flash accounting allows moving the price inside one transaction. It only matters if another contract (lending, oracle, tracker) reads the pool’s spot price or slot0. The hook itself reads slot0 only to place its own ranges.'],
+    ['low', 'Centralization', 'platformAdmin can change payees and sniperExempt; the launcher finalizes the launch. Nobody can raise the tax or pull other LPs’ liquidity via this hook (no liquidity hooks, donate disabled).'],
+    ['low', 'Reentrancy in payouts', 'take has a 500k gas cap and try/catch (PayoutDeferred), so a failing payee cannot block swaps. Plain ERC-20s have no callbacks.'],
+    ['low', 'Compiler note (0.8.28)', 'TransientStorageClearingHelperCollision only affects IR compilation that uses transient storage. Check whether the token uses transient storage.'],
+  ];
+  const cls = (r) => `<div class="risk ${r[0]}"><b>${r[1]}</b><div class="small">${r[2].replace(/`([^`]+)`/g, '<code>$1</code>')}</div></div>`;
+  $('#risk').innerHTML = `
+    ${win('LIVE_CHECKS.SYS', live.map(cls).join(''))}
+    <div style="height:18px"></div>
+    ${win('KNOWN_VECTORS.TXT <span class="muted">(code review of the hook — not an audit)</span>', st.map(cls).join(''))}`;
+}
+
+// ---------- wiring ----------
+$('#tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.tab').forEach((s) => (s.hidden = s.id !== b.dataset.tab));
+});
+document.querySelectorAll('input[name=unit]').forEach((r) => r.addEventListener('change', () => { unit = r.value; if (D) renderAll(); }));
+load().catch((e) => {
+  $('#loading').innerHTML = `Error: ${e.message}. Run <code>npm run index</code>, then <code>npm start</code>.`;
+  $('#asof').textContent = 'NO DATA';
+});

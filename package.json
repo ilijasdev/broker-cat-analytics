@@ -1,0 +1,15 @@
+{
+  "name": "broker-cat-analytics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "index": "node indexer/index.mjs",
+    "start": "node server.mjs",
+    "build": "node scripts/build-pages.mjs",
+    "check-stuck": "node indexer/check-stuck.mjs"
+  },
+  "dependencies": {
+    "viem": "^2.21.0"
+  }
+}
