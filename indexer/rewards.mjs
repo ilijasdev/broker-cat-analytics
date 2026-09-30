@@ -125,6 +125,13 @@ const res = {
   uniqueRecipients: holders.length, contractRecipients: holders.filter((h) => h.isContract).length,
   holders: holders.sort((a, b) => b.edel + b.broker * analytics.markPrice - (a.edel + a.broker * analytics.markPrice)),
 };
+// Supply that plausibly does not earn holder rewards (used by the reward calculator's eligible-supply estimate).
+res.excluded = {
+  poolManager: await client.readContract({ address: C.BROKER, abi: erc20, functionName: 'balanceOf', args: [C.POOL_MANAGER] }).then((v) => Number(formatUnits(v, dec))).catch(() => 0),
+  dead: await client.readContract({ address: C.BROKER, abi: erc20, functionName: 'balanceOf', args: [C.BURN] }).then((v) => Number(formatUnits(v, dec))).catch(() => 0),
+  tracker: balB,
+};
+
 // Cross-check against the launchpad's public API (aggregates it reports for this token). Optional.
 try {
   const url = `https://api.basestonk.io/api/launchpad/tokens/${C.BROKER}`;

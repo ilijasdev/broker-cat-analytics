@@ -50,7 +50,7 @@ async function load() {
   if (!D.edelUsd) document.querySelector('input[value=usd]').closest('label').hidden = true;
   renderAll();
 }
-const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderRewards(); renderLp(); renderRisk(); };
+const renderAll = () => { renderOverview(); renderWallets(); renderTrades(); renderHook(); renderRewards(); renderCalc(); renderLp(); renderRisk(); };
 
 // ---------- overview ----------
 function renderOverview() {
@@ -309,6 +309,110 @@ function renderRewards() {
   const top = R.holders.slice(0, 15);
   draw('c-rw', { type: 'bar', data: { labels: top.map((h) => short(h.address)), datasets: [{ data: top.map((h) => moneyPlain(val(h))), ...bar(top.map((h) => (h.isContract ? css('cyan') : css('acid')))) }] },
     options: { indexAxis: 'y', plugins: { legend: { display: false } } } });
+}
+
+// ---------- reward calculator ----------
+// Expected holder reward = daily volume x holder reward rate x (your BROKER / eligible supply).
+// Inputs are editable; defaults come from the indexed data. All numbers are estimates.
+const calcState = {};
+function renderCalc() {
+  if (!D.edelUsd) { $('#calc').innerHTML = note('EDEL/USD rate unavailable, so the calculator (which works in USD) cannot run. Re-run the indexer.'); return; }
+  const supply = D.token.totalSupply || 1e9;
+  const priceUsdNow = D.markPrice * D.edelUsd;
+  const mcapNow = priceUsdNow * supply;
+  const T = D.trades, tEnd = T[T.length - 1].ts;
+  const dayVol = (from, to) => T.filter((t) => t.ts > from && t.ts <= to).reduce((a, t) => a + t.edel, 0) * D.edelUsd;
+  const vol24 = dayVol(tEnd - 86400, tEnd), volAvg = T.reduce((a, t) => a + t.edel, 0) * D.edelUsd / Math.max(1, (tEnd - T[0].ts) / 86400);
+  const buyShareNow = T.filter((t) => t.side === 'buy').reduce((a, t) => a + t.edel, 0) / (T.reduce((a, t) => a + t.edel, 0) || 1);
+  const ex = R?.excluded;
+  const excludedNow = ex ? ex.poolManager + ex.dead + ex.tracker : (D.token.poolManagerBalance || 0);
+  // observed: value deposited into the tracker / traded volume (see README); theory is 1.70%
+  const defaults = { mode: 'tokens', amount: 10_000_000, mcap: Math.round(mcapNow), vol: Math.round(vol24), rate: 1.8, buyShare: Math.round(buyShareNow * 100), excluded: Math.round(excludedNow) };
+  const kept = calcState.touched ? { ...calcState } : {}; // keep the user's edits across tab re-renders (e.g. EDEL/USD toggle)
+  Object.assign(calcState, defaults, kept);
+  const s = calcState;
+
+  $('#calc').innerHTML = `
+    <div class="grid two">
+      ${win('YOUR_POSITION.EXE', `
+        <div class="grid" style="gap:12px">
+          <label>I enter my holding as
+            <select id="k-mode"><option value="tokens">BROKER tokens</option><option value="usd">USD value</option></select></label>
+          <label><span id="k-amount-l">BROKER held</span><br><input type="number" id="k-amount" min="0" step="any" value="${s.amount}" style="width:100%"></label>
+          <label>Market cap (USD, FDV of ${compact(supply)} BROKER) — now ${'$' + compact(mcapNow)}<br>
+            <input type="range" id="k-mcap-r" min="4" max="9" step="0.01" style="width:100%"><input type="number" id="k-mcap" min="1" step="any" value="${s.mcap}" style="width:100%"></label>
+          <label>Daily trading volume (USD) — last 24h ${'$' + compact(vol24)}, period average ${'$' + compact(volAvg)}<br>
+            <input type="range" id="k-vol-r" min="3" max="8" step="0.01" style="width:100%"><input type="number" id="k-vol" min="0" step="any" value="${s.vol}" style="width:100%"></label>
+        </div>`)}
+      ${win('ASSUMPTIONS.SYS', `
+        <div class="grid" style="gap:12px">
+          <label>Holder reward rate (% of volume) — observed ~1.8%, theory 1.70%<br><input type="number" id="k-rate" min="0" step="0.01" value="${s.rate}" style="width:100%"></label>
+          <label>Share of volume that is buys (%) — buys pay the reward in BROKER, sells in EDEL<br><input type="number" id="k-buy" min="0" max="100" step="1" value="${s.buyShare}" style="width:100%"></label>
+          <label>Supply that earns nothing (BROKER) — PoolManager + dead + tracker now<br><input type="number" id="k-excl" min="0" step="any" value="${s.excluded}" style="width:100%"></label>
+          <button class="pill" id="k-reset" type="button">reset to live values</button>
+        </div>
+        ${note('Model: your expected reward = volume × rate × your share of the <i>eligible</i> supply. Real payouts are queue-based and lumpy, depend on <i>when</i> you held, and change with volume, price and who else holds. Not financial advice.')}`)}
+    </div>
+    <div style="height:18px"></div>
+    <div id="k-out"></div>`;
+
+  const $k = (id) => document.getElementById(id);
+  $k('k-mode').value = s.mode;
+  const logToVal = (x) => 10 ** x, valToLog = (v) => Math.log10(Math.max(1, v));
+  $k('k-mcap-r').value = valToLog(s.mcap); $k('k-vol-r').value = valToLog(s.vol);
+
+  const calc = () => {
+    const price = s.mcap / supply;
+    const tokens = s.mode === 'tokens' ? s.amount : s.amount / price;
+    const holdUsd = tokens * price;
+    const eligible = Math.max(1, supply - s.excluded);
+    const share = tokens / eligible;
+    const pool = s.vol * (s.rate / 100);
+    const daily = pool * share;
+    const apr = holdUsd > 0 ? (daily * 365) / holdUsd : 0;
+    const brokerDaily = (daily * (s.buyShare / 100)) / price;
+    const edelDaily = (daily * (1 - s.buyShare / 100)) / D.edelUsd;
+    const usd = (v) => '$' + (Math.abs(v) >= 100 ? nf(v, 0) : nf(v, 2));
+    const cell = (v, daysN) => `<td>${usd(v * daysN)}</td>`;
+    const volMult = [0.25, 0.5, 1, 2, 5], capMult = [0.5, 1, 2, 5, 10];
+    const gridDaily = volMult.map((vm) => `<tr><td class="l">${'$' + compact(s.vol * vm)} / day</td>${capMult.map((cm) => {
+      const p = (s.mcap * cm) / supply, tk = s.mode === 'tokens' ? s.amount : s.amount / (s.mcap / supply); // USD mode: same token count, price moves
+      return `<td>${usd(s.vol * vm * (s.rate / 100) * (tk / eligible))}</td>`;
+    }).join('')}</tr>`).join('');
+    const gridApr = volMult.map((vm) => `<tr><td class="l">${'$' + compact(s.vol * vm)} / day</td>${capMult.map((cm) =>
+      `<td>${nf((s.vol * vm * (s.rate / 100) * 365) / ((s.mcap * cm / supply) * eligible) * 100, 1)}%</td>`).join('')}</tr>`).join('');
+    $k('k-out').innerHTML = `
+      <div class="grid kpis">
+        ${kpi('Position value', usd(holdUsd) + ` <span class="muted small">${compact(tokens)} BROKER @ $${(price).toPrecision(3)}</span>`)}
+        ${kpi('Your share of eligible supply', (share * 100).toFixed(share < 0.01 ? 4 : 2) + '%')}
+        ${kpi('Total holder reward pool / day', usd(pool))}
+        ${kpi('Your expected reward / day', usd(daily))}
+        ${kpi('Per week / month / year', `${usd(daily * 7)} / ${usd(daily * 30)} / ${usd(daily * 365)}`)}
+        ${kpi('Yield (APR on position value)', nf(apr * 100, 1) + '%')}
+        ${kpi('Paid in kind, per day', `${compact(brokerDaily)} BROKER + ${compact(edelDaily)} EDEL`)}
+        ${kpi('Days of rewards to offset a 5% price drop', daily > 0 ? nf((holdUsd * 0.05) / daily, 1) + ' days' : '–')}
+      </div>
+      <div class="grid two">
+        ${win('DAILY_REWARD.TABLE <span class="muted">(USD, rows: volume · cols: market cap ×)</span>', `<div class="tablewrap"><table><thead><tr><th class="l">Volume</th>${capMult.map((m) => `<th>${m}× cap</th>`).join('')}</tr></thead><tbody>${gridDaily}</tbody></table></div>
+          <div class="small muted" style="margin-top:6px">${s.mode === 'tokens' ? 'You hold a fixed token count, so market cap changes your position value, not your reward.' : 'You fixed a USD amount at the current market cap; a higher cap on the same tokens changes the value only.'}</div>`)}
+        ${win('APR.TABLE <span class="muted">(% per year, same axes)</span>', `<div class="tablewrap"><table><thead><tr><th class="l">Volume</th>${capMult.map((m) => `<th>${m}× cap</th>`).join('')}</tr></thead><tbody>${gridApr}</tbody></table></div>
+          <div class="small muted" style="margin-top:6px">APR = rate × volume × 365 ÷ eligible market cap — the same for any holding size.</div>`)}
+      </div>`;
+  };
+  const bind = (id, key, fn = Number) => $k(id).addEventListener('input', (e) => { s[key] = fn(e.target.value) || 0; s.touched = true; sync(); calc(); });
+  const sync = () => { $k('k-mcap-r').value = valToLog(s.mcap); $k('k-vol-r').value = valToLog(s.vol); };
+  bind('k-amount', 'amount'); bind('k-mcap', 'mcap'); bind('k-vol', 'vol'); bind('k-rate', 'rate'); bind('k-buy', 'buyShare'); bind('k-excl', 'excluded');
+  $k('k-mcap-r').addEventListener('input', (e) => { s.mcap = Math.round(logToVal(+e.target.value)); $k('k-mcap').value = s.mcap; s.touched = true; calc(); });
+  $k('k-vol-r').addEventListener('input', (e) => { s.vol = Math.round(logToVal(+e.target.value)); $k('k-vol').value = s.vol; s.touched = true; calc(); });
+  $k('k-mode').addEventListener('change', (e) => {
+    s.mode = e.target.value; s.touched = true;
+    $k('k-amount-l').textContent = s.mode === 'tokens' ? 'BROKER held' : 'USD value held';
+    if (s.mode === 'usd') s.amount = Math.round(s.amount * (s.mcap / supply)); else s.amount = Math.round(s.amount / (s.mcap / supply));
+    $k('k-amount').value = s.amount; calc();
+  });
+  $k('k-reset').addEventListener('click', () => { calcState.touched = false; Object.assign(calcState, defaults); renderCalc(); });
+  $k('k-amount-l').textContent = s.mode === 'tokens' ? 'BROKER held' : 'USD value held';
+  calc();
 }
 
 // ---------- LP ----------
