@@ -114,3 +114,17 @@ footer .win .body { padding: 10px 14px; }
 
 .chip { padding: 2px 10px; font-size: 11px; margin: 4px 4px 0 0; box-shadow: 2px 2px 0 #000; }
 label { display: block; }
+
+/* calculator tables: fit the container, never scroll sideways */
+.wrapcells th, .wrapcells td, .sens th, .sens td { white-space: normal; }
+.sens { table-layout: fixed; }
+.sens th, .sens td { padding: 5px 6px; font-size: 12px; line-height: 1.25; }
+.sens th:first-child, .sens td:first-child { width: 16%; }
+.sens td .small { font-size: 10.5px; }
+@media (max-width: 640px) { .sens th, .sens td { padding: 4px 3px; font-size: 10.5px; } .sens td .small { font-size: 9.5px; } }
+#calc .tablewrap { overflow-x: auto; max-height: none; }
+@media (max-width: 640px) {
+  .wrapcells th, .wrapcells td { padding: 5px 6px; font-size: 11.5px; overflow-wrap: anywhere; }
+  .wrapcells th:first-child, .wrapcells td:first-child { width: 34%; }
+}
+@media (max-width: 380px) { .sens th, .sens td { padding: 3px 2px; font-size: 9.5px; } .sens td .small { font-size: 8.5px; } .sens th:first-child, .sens td:first-child { width: 18%; } }

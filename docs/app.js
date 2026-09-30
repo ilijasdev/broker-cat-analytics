@@ -390,8 +390,8 @@ function renderCalc() {
     const row = (l, f, cls = '') => `<tr><td class="l">${l}</td><td>${f(a)}</td><td class="${cls}"><b>${f(b)}</b></td></tr>`;
     $k('k-mm-v').textContent = s.mcapMult + '×'; $k('k-vm-v').textContent = s.volMult + '×';
     $k('k-out').innerHTML = `
-      <div class="grid two">
-        ${win('NOW_vs_SCENARIO.TABLE', `<div class="tablewrap"><table><thead><tr><th class="l"></th><th>Now</th><th>Scenario (${s.mcapMult}× cap, ${s.volMult}× volume)</th></tr></thead><tbody>
+      <div class="grid one">
+        ${win('NOW_vs_SCENARIO.TABLE', `<div class="tablewrap"><table class="wrapcells"><thead><tr><th class="l"></th><th>Now</th><th>Scenario (${s.mcapMult}× cap, ${s.volMult}× volume)</th></tr></thead><tbody>
           ${row('Market cap', (c) => usd(c.mcap))}
           ${row('Price per BROKER', (c) => '$' + c.price.toPrecision(3))}
           ${row('Your position value', (c) => usd(c.pos))}
@@ -403,14 +403,14 @@ function renderCalc() {
           ${row('Per month', (c) => usd(c.daily * 30))}
           ${row('Per year', (c) => usd(c.daily * 365), 'pos')}
           ${row('APR (reward ÷ position value)', (c) => nf(c.apr * 100, 1) + '%', 'pos')}
-          ${row('APY if rewards were re-invested daily (theoretical)', (c) => c.apr > 20 ? 'not meaningful' : nf(apy(c.apr) * 100, 1) + '%')}
+          ${row('APY if rewards were re-invested daily (theoretical)', (c) => c.apr > 5 ? 'not meaningful (APR too high)' : nf(apy(c.apr) * 100, 1) + '%')}
           ${row('Paid in kind / day', (c) => `${compact(c.brokerDay)} BROKER + ${compact(c.edelDay)} EDEL`)}
         </tbody></table></div>
         <div class="small muted" style="margin-top:8px">With a fixed token count, a higher market cap raises your position value but <b>not</b> your reward (reward = volume × rate × your share). So APR scales as <b>volume ÷ market cap</b>: ${s.volMult}× volume with ${s.mcapMult}× cap changes APR by ${(s.volMult / s.mcapMult).toFixed(2)}×.</div>`)}
         ${win('SENSITIVITY.TABLE <span class="muted">(your reward / day · APR)</span>', (() => {
           const vms = [0.25, 0.5, 1, 2, 5, 10], mms = [0.5, 1, 2, 5, 10, 25];
-          const cell = (vm, mm) => { const daily = volBase * vm * (s.rate / 100) * (tokens / eligible), pos = tokens * (mcapNow * mm / supply); return `<td>${usd(daily)} · ${nf(pos > 0 ? daily * 365 / pos * 100 : 0, 0)}%</td>`; };
-          return `<div class="tablewrap"><table><thead><tr><th class="l">Volume ↓ / Cap →</th>${mms.map((m) => `<th>${m}×</th>`).join('')}</tr></thead><tbody>
+          const cell = (vm, mm) => { const daily = volBase * vm * (s.rate / 100) * (tokens / eligible), pos = tokens * (mcapNow * mm / supply); return `<td>${usd(daily)}<br><span class="muted small">${nf(pos > 0 ? daily * 365 / pos * 100 : 0, 0)}% APR</span></td>`; };
+          return `<div class="tablewrap"><table class="sens"><thead><tr><th class="l">Volume ↓ / Cap →</th>${mms.map((m) => `<th>${m}×</th>`).join('')}</tr></thead><tbody>
             ${vms.map((vm) => `<tr><td class="l">${vm}× (${'$' + compact(volBase * vm)})</td>${mms.map((mm) => cell(vm, mm)).join('')}</tr>`).join('')}</tbody></table></div>`;
         })())}
       </div>`;
@@ -460,7 +460,7 @@ function renderCalc() {
           <tr><td class="l">Realized: rewards ÷ current position × 365 ÷ ${days.toFixed(1)}d</td><td>${realizedApr == null ? '–' : nf(realizedApr * 100, 0) + '% APR'}</td></tr>
           <tr><td class="l">Forward, 24h volume ${'$' + compact(vol24)}</td><td>${usd(fwd24 * 365)} / yr · ${pos > 0 ? nf(fwd24 * 365 / pos * 100, 0) : '–'}% APR</td></tr>
           <tr><td class="l">Forward, period-average volume ${'$' + compact(volAvg)}</td><td>${usd(fwdAvg * 365)} / yr · ${pos > 0 ? nf(fwdAvg * 365 / pos * 100, 0) : '–'}% APR</td></tr>
-          <tr><td class="l">APY if re-invested daily (theoretical)</td><td>${pos > 0 && fwd24 * 365 / pos < 20 ? nf(apy(fwd24 * 365 / pos) * 100, 0) + '%' : 'not meaningful at this APR'}</td></tr>
+          <tr><td class="l">APY if re-invested daily (theoretical)</td><td>${pos > 0 && fwd24 * 365 / pos <= 5 ? nf(apy(fwd24 * 365 / pos) * 100, 0) + '%' : 'not meaningful at this APR'}</td></tr>
           ${w ? `<tr><td class="l">Your trading PnL in this pool</td><td>${sgn(w.total)}</td></tr>` : ''}
         </tbody></table>
         ${note('“Realized APR” divides what you earned by your <i>current</i> position, so it is only meaningful if your balance was roughly constant. “Forward” assumes today’s volume and price hold for a year. Neither includes price changes of BROKER itself, which usually dominate.')}`)}

@@ -10,7 +10,7 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x').pathname;
   let file;
-  if (url === '/data/analytics.json') file = path.join(ROOT, 'data', 'analytics.json');
+  if (url === '/data/analytics.json' || url === '/data/rewards.json') file = path.join(ROOT, url);
   else {
     const rel = url === '/' ? 'index.html' : url.slice(1);
     file = path.join(ROOT, 'web', rel);
