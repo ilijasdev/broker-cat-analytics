@@ -11,6 +11,7 @@
   --pixel: "Silkscreen", cursive;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { background: var(--acid); }
 body {
   margin: 0; color: var(--ink); font: 14px/1.5 var(--mono); min-height: 100vh;
@@ -105,9 +106,14 @@ input[type=search]:focus, select:focus { outline: none; background: #fffbd0; }
 .risk.high { border-left-color: var(--coral); } .risk.med { border-left-color: var(--yellow); } .risk.low { border-left-color: var(--acid); }
 .risk b { font-family: var(--display); }
 
-#drawer { position: fixed; inset: 0 0 0 auto; width: min(620px, 100vw); background: var(--acid); border-left: var(--b) solid #000; overflow: auto; padding: 16px; z-index: 10; box-shadow: -8px 0 0 rgba(0,0,0,.25); }
-#drawer .win { margin-bottom: 16px; }
-#drawer-close { float: right; }
+/* wallet page */
+#addrbar input { flex: 1; min-width: min(100%, 280px); }
+#wallet > .win, #wallet > .grid { margin-bottom: 18px; }
+#wallet .sec { display: block; width: fit-content; margin: 26px 0 14px; font: 700 12px var(--pixel); background: var(--yellow); }
+.addrline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+code.full { font-size: 13px; overflow-wrap: anywhere; }
+.sum td { white-space: normal; }
+.sum tr.total td { font: 800 16px var(--display); border-top: var(--b) solid #000; border-bottom: 0; }
 
 footer { margin-top: 28px; font-size: 12px; }
 footer .win .body { padding: 10px 14px; }

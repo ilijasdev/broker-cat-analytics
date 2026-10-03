@@ -13,6 +13,7 @@ const sgn = (edel) => `<span class="${edel > 0 ? 'pos' : edel < 0 ? 'neg' : ''}"
 const pct = (x) => (x == null ? '–' : `${(x * 100).toFixed(1)}%`);
 const short = (a) => a.slice(0, 6) + '…' + a.slice(-4);
 const addr = (a) => `<a href="https://basescan.org/address/${a}" target="_blank" rel="noopener">${short(a)}</a>`;
+const walletUrl = (a) => `wallet.html?a=${a}`;
 const txl = (h, t = 'tx') => `<a href="https://basescan.org/tx/${h}" target="_blank" rel="noopener">${t}</a>`;
 const dt = (ts) => (ts ? new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 16) : '–');
 const price = (p) => (usdOK() ? '$' + (p * D.edelUsd).toPrecision(3) : p.toPrecision(3));
@@ -134,7 +135,7 @@ function renderWallets() {
       <span class="muted small" id="wcount"></span>
     </div>
     <div class="tablewrap"><table><thead><tr></tr></thead><tbody></tbody></table></div>
-    ${note('Total = realized + unrealized (position × last price − cost basis). “Balance now” is the live BROKER balance; if it exceeds the tracked position, the wallet got tokens outside this pool. Click a row for details.')}`);
+    ${note('Total = realized + unrealized (position × last price − cost basis). “Balance now” is the live BROKER balance; if it exceeds the tracked position, the wallet got tokens outside this pool. Click a row to open the wallet’s full page.')}`);
   $('#wview').value = wstate.view; $('#wmin').value = wstate.min;
   const head = $('#wallets thead tr');
   walletCols.forEach(([k, label], i) => {
@@ -163,37 +164,10 @@ function fillWallets() {
   const tb = $('#wallets tbody'); tb.innerHTML = '';
   for (const w of rows.slice(0, 500)) {
     const tr = el(`<tr class="click">${walletCols.map(([, , fn, c]) => `<td class="${c || ''}">${fn(w)}</td>`).join('')}</tr>`);
-    tr.onclick = (e) => { if (e.target.tagName !== 'A') openWallet(w.address); };
+    tr.onclick = (e) => { if (e.target.tagName !== 'A') location.href = walletUrl(w.address); };
     tb.append(tr);
   }
 }
-
-function openWallet(a) {
-  const w = D.wallets.find((x) => x.address === a);
-  const mine = D.trades.filter((t) => t.trader === a);
-  $('#drawer').hidden = false;
-  $('#drawer-body').innerHTML = `
-    ${win(`WALLET ${short(a)}`, `
-      <div>${addr(a)} <span class="muted small">· ${nf(w.trades, 0)} trades · ${dt(w.firstTs)} → ${dt(w.lastTs)}</span></div>
-      <div class="grid kpis" style="grid-template-columns:1fr 1fr;margin:12px 0 0">
-        ${kpi(`Total PnL (ROI ${pct(w.roi)})`, sgn(w.total))}
-        ${kpi('Realized', sgn(w.realized))}
-        ${kpi('Unrealized', sgn(w.unrealized))}
-        ${kpi(`Open position${w.avgCost ? ' @ ' + price(w.avgCost) : ''}`, compact(w.position))}
-      </div>
-      ${w.untrackedSold > 1e-6 ? note(`Sold ${compact(w.untrackedSold)} BROKER with no tracked purchase through this pool (booked at zero cost) — realized PnL is probably overstated.`) : ''}
-      ${w.viaRouter ? note(`${w.viaRouter} trades were resolved through a router address (final recipient/sender is followed); attribution may be off for complex aggregators.`) : ''}`)}
-    ${(() => { const rw = R?.holders.find((h) => h.address === a); return rw ? note(`Holder rewards claimed from the tracker: <b>${compact(rw.edel)} EDEL</b> + <b>${compact(rw.broker)} BROKER</b> (not included in the PnL above).`) : ''; })()}
-    ${win('CUMULATIVE_PNL.CHART', '<div class="chartbox" style="height:220px"><canvas id="c-wallet"></canvas></div>')}
-    ${win('TRADES.LOG', `<div class="tablewrap" style="max-height:40vh"><table><thead><tr><th class="l">Time (UTC)</th><th>Side</th><th>BROKER</th><th>EDEL</th><th>Price</th><th></th></tr></thead><tbody>
-    ${mine.slice().reverse().map((t) => `<tr><td class="l">${dt(t.ts)}</td><td><span class="tag ${t.side}">${t.side}</span></td><td>${compact(t.broker)}</td><td>${compact(t.edel)}</td><td>${price(t.price)}</td><td>${txl(t.tx)}</td></tr>`).join('')}
-    </tbody></table></div>`)}`;
-  draw('c-wallet', { type: 'line', data: { datasets: [
-    { label: 'Realized', data: w.series.map((s) => ({ x: s[0], y: moneyPlain(s[1]) })), borderColor: '#000', pointRadius: 0, stepped: true, borderWidth: 2 },
-    { label: 'Realized + unrealized', data: w.series.map((s) => ({ x: s[0], y: moneyPlain(s[1] + s[2]) })), borderColor: css('edel'), pointRadius: 0, borderWidth: 2 }] },
-    options: { scales: { x: timeAxis } } });
-}
-$('#drawer-close').onclick = () => { $('#drawer').hidden = true; };
 
 // ---------- hook & tax ----------
 function renderHook() {
@@ -288,10 +262,11 @@ function renderRewards() {
     $('#rcount').textContent = `${rows.length} addresses${rows.length > 500 ? ' (showing top 500)' : ''}`;
     $('#rewards tbody').innerHTML = rows.slice(0, 500).map((h) => {
       const w = pnl.get(h.address);
-      return `<tr><td class="l">${addr(h.address)}</td><td>${h.isContract ? '<span class="tag">contract</span>' : 'EOA'}</td><td>${compact(h.broker)}</td><td>${compact(h.edel)}</td><td>${money(val(h))}</td><td>${h.claims}</td><td>${h.pendB == null ? '–' : compact(h.pendB) + ' / ' + compact(h.pendE)}</td><td>${h.lastBlock}</td><td>${w ? sgn(w.total) : '<span class="muted">–</span>'}</td></tr>`;
+      return `<tr class="click" data-a="${h.address}"><td class="l">${addr(h.address)}</td><td>${h.isContract ? '<span class="tag">contract</span>' : 'EOA'}</td><td>${compact(h.broker)}</td><td>${compact(h.edel)}</td><td>${money(val(h))}</td><td>${h.claims}</td><td>${h.pendB == null ? '–' : compact(h.pendB) + ' / ' + compact(h.pendE)}</td><td>${h.lastBlock}</td><td>${w ? sgn(w.total) : '<span class="muted">–</span>'}</td></tr>`;
     }).join('');
   };
   $('#rq').oninput = fill; $('#rk').onchange = fill; fill();
+  $('#rewards tbody').onclick = (e) => { const tr = e.target.closest('tr'); if (tr && e.target.tagName !== 'A') location.href = walletUrl(tr.dataset.a); };
   const top = R.holders.slice(0, 15);
   draw('c-rw', { type: 'bar', data: { labels: top.map((h) => short(h.address)), datasets: [{ data: top.map((h) => moneyPlain(val(h))), ...bar(top.map((h) => (h.isContract ? css('cyan') : css('acid')))) }] },
     options: { indexAxis: 'y', plugins: { legend: { display: false } } } });
@@ -363,6 +338,7 @@ function renderCalc() {
       <div class="toolbar">
         <input type="search" id="k-addr" placeholder="Paste your wallet address (0x…)" value="${s.addr}" style="flex:1;min-width:280px">
         <button class="pill" id="k-look" type="button">Look up</button>
+        <a class="pill" id="k-full" hidden>Full wallet page →</a>
         <span class="muted small" id="k-status"></span>
       </div>
       <div id="k-wallet"></div>
@@ -442,6 +418,7 @@ function renderCalc() {
     const out = $k('k-wallet'), st = $k('k-status');
     if (!ADDR_RE.test(a)) { st.textContent = 'Not a valid 0x address.'; return; }
     s.addr = a; try { localStorage.setItem('bca-addr', a); } catch { /* ignore */ }
+    $k('k-full').href = walletUrl(a.toLowerCase()); $k('k-full').hidden = false;
     st.textContent = 'reading balance…';
     const al = a.toLowerCase();
     const rec = R?.holders.find((h) => h.address === al);
